@@ -132,3 +132,6 @@ dist
 
 # Claude config directory
 .claude/
+
+# Temp files
+.tmp/

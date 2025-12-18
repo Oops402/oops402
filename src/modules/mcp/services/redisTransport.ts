@@ -78,6 +78,15 @@ export async function getSessionOwner(sessionId: string): Promise<string | null>
   return await redisClient.get(`session:${sessionId}:owner`);
 }
 
+export async function setSessionAccessToken(sessionId: string, accessToken: string): Promise<void> {
+  logger.debug('Setting session access token', { sessionId });
+  await redisClient.set(`session:${sessionId}:token`, accessToken, { EX: 3600 }); // 1 hour expiry
+}
+
+export async function getSessionAccessToken(sessionId: string): Promise<string | null> {
+  return await redisClient.get(`session:${sessionId}:token`);
+}
+
 export async function validateSessionOwnership(sessionId: string, userId: string): Promise<boolean> {
   const owner = await getSessionOwner(sessionId);
   return owner === userId;

@@ -1,0 +1,15 @@
+diff --git a/node_modules/agent0-sdk/dist/core/oasf-validator.js b/node_modules/agent0-sdk/dist/core/oasf-validator.js
+index 1400769..918fbc6 100644
+--- a/node_modules/agent0-sdk/dist/core/oasf-validator.js
++++ b/node_modules/agent0-sdk/dist/core/oasf-validator.js
+@@ -1,8 +1,8 @@
+ /**
+  * OASF taxonomy validation utilities
+  */
+-import allSkills from '../taxonomies/all_skills.json';
+-import allDomains from '../taxonomies/all_domains.json';
++import allSkills from '../taxonomies/all_skills.json' with { type: 'json' };
++import allDomains from '../taxonomies/all_domains.json' with { type: 'json' };
+ /**
+  * Validate if a skill slug exists in the OASF taxonomy
+  * @param slug The skill slug to validate (e.g., "natural_language_processing/summarization")

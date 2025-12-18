@@ -114,7 +114,10 @@ class StructuredLogger {
     });
 
     // Output as JSON for Cloud Logging
-    console.log(JSON.stringify(entry));
+    // Handle BigInt serialization
+    console.log(JSON.stringify(entry, (_, value) =>
+      typeof value === 'bigint' ? value.toString() : value
+    ));
   }
 
   // Convenience methods for different severity levels

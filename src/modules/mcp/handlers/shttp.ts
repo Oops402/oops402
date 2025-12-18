@@ -1,7 +1,7 @@
 import { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Request, Response } from "express";
-import { getShttpTransport, isSessionOwnedBy, redisRelayToMcpServer, ServerRedisTransport, setSessionOwner, shutdownSession } from "../services/redisTransport.js";
+import { getShttpTransport, isSessionOwnedBy, redisRelayToMcpServer, ServerRedisTransport, setSessionOwner, setSessionAccessToken, shutdownSession } from "../services/redisTransport.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "crypto";
 import { createMcpServer } from "../services/mcp.js";
@@ -102,6 +102,13 @@ export async function handleStreamableHTTP(req: Request, res: Response) {
         userId,
         isGetRequest
       });
+      // Ensure access token is stored (in case it wasn't stored during initialization)
+      if (req.auth?.token) {
+        await setSessionAccessToken(sessionId, req.auth.token);
+        logger.debug('Stored access token for existing session', { sessionId });
+      } else {
+        logger.warning('No access token in request for existing session', { sessionId });
+      }
       shttpTransport = await getShttpTransport(sessionId, onsessionclosed, isGetRequest);
     } else if (isInitializeRequest(req.body)) {
       // New initialization request - use JSON response mode
@@ -118,14 +125,17 @@ export async function handleStreamableHTTP(req: Request, res: Response) {
           userId
         });
         
-        const { server, cleanup: mcpCleanup } = createMcpServer();
+        const { server, cleanup: mcpCleanup } = createMcpServer(sessionId);
 
         const serverRedisTransport = new ServerRedisTransport(sessionId);
         serverRedisTransport.onclose = mcpCleanup;
         await server.connect(serverRedisTransport)
       
-        // Set session ownership
+        // Set session ownership and store access token
         await setSessionOwner(sessionId, userId);
+        if (req.auth?.token) {
+          await setSessionAccessToken(sessionId, req.auth.token);
+        }
         
         logger.info('Session initialized successfully', {
           sessionId,

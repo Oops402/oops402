@@ -11,6 +11,9 @@
 import { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { AuthModule } from '../modules/auth/index.js';
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
+import { logger } from '../modules/shared/logger.js';
 
 /**
  * Token introspection response per RFC 7662
@@ -170,5 +173,237 @@ export class InternalTokenValidator extends BaseTokenValidator {
     // This maintains the separation - auth module is still "external"
     // architecturally, just running in the same process for convenience
     return this.authModule.introspectToken(token);
+  }
+}
+
+/**
+ * Auth0 token validator - validates JWT tokens using Auth0's JWKS endpoint
+ * Used when AUTH_MODE=external and AUTH_PROVIDER=auth0
+ *
+ * Auth0 issues JWT access tokens (not opaque tokens), so we verify them
+ * locally using their public keys from the JWKS endpoint. This is faster
+ * than introspection and doesn't require network calls for each validation.
+ *
+ * IMPORTANT: Auth0 does NOT provide an RFC 7662 introspection endpoint.
+ * All Auth0 tokens must be verified as JWTs using this validator.
+ */
+export class Auth0TokenValidator extends BaseTokenValidator {
+  private jwksClient: jwksClient.JwksClient;
+  private issuer: string;
+  private audience?: string;
+
+  // Cache verified tokens to avoid re-verification
+  private cache = new Map<string, {
+    result: TokenIntrospectionResponse;
+    expiresAt: number;
+  }>();
+
+  constructor(auth0Domain: string, audience?: string) {
+    super();
+    
+    this.issuer = `https://${auth0Domain}/`;
+    this.audience = audience;
+    
+    // Initialize JWKS client to fetch Auth0's public keys
+    this.jwksClient = jwksClient({
+      jwksUri: `https://${auth0Domain}/.well-known/jwks.json`,
+      cache: true,
+      cacheMaxAge: 86400000, // 24 hours
+      rateLimit: true,
+      jwksRequestsPerMinute: 5
+    });
+
+    // Clean up expired cache entries every minute
+    setInterval(() => this.cleanupCache(), 60 * 1000);
+  }
+
+  /**
+   * Check if a token string looks like a JWT (has 3 parts separated by dots)
+   */
+  private isJWT(token: string): boolean {
+    return token.split('.').length === 3;
+  }
+
+  /**
+   * Get signing key from JWKS for token verification
+   */
+  private getKey(header: jwt.JwtHeader, callback: jwt.SigningKeyCallback): void {
+    if (!header.kid) {
+      logger.warning('JWT header missing key ID (kid)', {});
+      callback(new Error('No kid in token header'));
+      return;
+    }
+
+    logger.debug('Fetching signing key from JWKS', {
+      kid: header.kid
+    });
+
+    this.jwksClient.getSigningKey(header.kid, (err, key) => {
+      if (err) {
+        logger.error('Failed to fetch signing key from JWKS', err instanceof Error ? err : new Error(String(err)), {
+          kid: header.kid
+        });
+        callback(err);
+        return;
+      }
+      
+      const signingKey = key?.getPublicKey();
+      logger.debug('Successfully fetched signing key from JWKS', {
+        kid: header.kid
+      });
+      callback(null, signingKey);
+    });
+  }
+
+  async introspect(token: string): Promise<TokenIntrospectionResponse> {
+    const tokenPrefix = token.substring(0, 20) + '...';
+    
+    // Check cache first
+    const cached = this.cache.get(token);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.debug('Auth0 token validation cache hit', {
+        tokenPrefix,
+        sub: cached.result.sub,
+        exp: cached.result.exp
+      });
+      return cached.result;
+    }
+
+    logger.debug('Starting Auth0 JWT verification', {
+      tokenPrefix,
+      issuer: this.issuer,
+      audience: this.audience
+    });
+
+    // If token doesn't look like a JWT, it's invalid
+    if (!this.isJWT(token)) {
+      logger.warning('Token is not a valid JWT format', {
+        tokenPrefix,
+        reason: 'Token does not have 3 parts separated by dots'
+      });
+      return { active: false };
+    }
+
+    try {
+      // Decode token header to get key ID (without verification)
+      const decodedHeader = jwt.decode(token, { complete: true });
+      if (!decodedHeader || typeof decodedHeader === 'string') {
+        logger.warning('Failed to decode JWT header', { tokenPrefix });
+        return { active: false };
+      }
+
+      const kid = decodedHeader.header.kid;
+      logger.debug('JWT header decoded', {
+        tokenPrefix,
+        kid,
+        alg: decodedHeader.header.alg
+      });
+
+      // Verify JWT using Auth0's public keys
+      logger.debug('Fetching signing key from JWKS', {
+        tokenPrefix,
+        kid
+      });
+
+      const decoded = await new Promise<jwt.JwtPayload>((resolve, reject) => {
+        jwt.verify(
+          token,
+          (header, callback) => {
+            logger.debug('Getting signing key for JWT verification', {
+              tokenPrefix,
+              kid: header.kid
+            });
+            this.getKey(header, callback);
+          },
+          {
+            audience: this.audience,
+            issuer: this.issuer,
+            algorithms: ['RS256']
+          },
+          (err, decoded) => {
+            if (err) {
+              logger.debug('JWT verification failed', {
+                tokenPrefix,
+                error: err.message,
+                errorName: err.name
+              });
+              reject(err);
+            } else {
+              logger.debug('JWT verification successful', {
+                tokenPrefix,
+                sub: (decoded as jwt.JwtPayload).sub,
+                iss: (decoded as jwt.JwtPayload).iss,
+                aud: (decoded as jwt.JwtPayload).aud,
+                exp: (decoded as jwt.JwtPayload).exp,
+                iat: (decoded as jwt.JwtPayload).iat
+              });
+              resolve(decoded as jwt.JwtPayload);
+            }
+          }
+        );
+      });
+
+      // Convert JWT claims to RFC 7662 introspection format
+      const result: TokenIntrospectionResponse = {
+        active: true,
+        sub: decoded.sub,
+        client_id: decoded.azp || decoded.aud, // Auth0 uses 'azp' (authorized party) or 'aud' (audience)
+        scope: decoded.scope as string | undefined,
+        exp: decoded.exp,
+        aud: decoded.aud,
+        username: decoded.email || decoded.nickname || decoded.name,
+        token_type: 'Bearer',
+        iss: decoded.iss,
+        nbf: decoded.nbf,
+        iat: decoded.iat
+      };
+
+      logger.info('Auth0 token validated successfully', {
+        tokenPrefix,
+        sub: result.sub,
+        client_id: result.client_id,
+        username: result.username,
+        exp: result.exp,
+        scope: result.scope
+      });
+
+      // Cache successful verifications until token expiry (or 60 seconds, whichever is shorter)
+      if (result.exp) {
+        const tokenExpiry = result.exp * 1000; // Convert to milliseconds
+        const cacheExpiry = Math.min(tokenExpiry, Date.now() + 60 * 1000);
+        this.cache.set(token, {
+          result,
+          expiresAt: cacheExpiry
+        });
+        logger.debug('Token validation result cached', {
+          tokenPrefix,
+          cacheExpiry: new Date(cacheExpiry).toISOString()
+        });
+      }
+
+      return result;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorName = error instanceof Error ? error.name : 'UnknownError';
+      
+      logger.error('Failed to verify Auth0 JWT', error instanceof Error ? error : new Error(errorMessage), {
+        tokenPrefix,
+        errorName,
+        issuer: this.issuer,
+        audience: this.audience
+      });
+      
+      return { active: false };
+    }
+  }
+
+  private cleanupCache(): void {
+    const now = Date.now();
+    for (const [token, entry] of this.cache.entries()) {
+      if (entry.expiresAt <= now) {
+        this.cache.delete(token);
+      }
+    }
   }
 }

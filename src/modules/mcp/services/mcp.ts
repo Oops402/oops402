@@ -21,6 +21,15 @@ import {
   UnsubscribeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v4";
+import { getPKPsForAuthMethod, mintPKP, getPkpSessionSigs, type PKP, PKPAccount } from "../../wallet/index.js";
+import { getBalances, transferToken } from "../../wallet/chainService.js";
+import { searchAgents, getAgent } from "../../agents/service.js";
+import { makePayment } from "../../x402/service.js";
+import { queryCachedResources } from "../../x402/bazaarService.js";
+import { getSessionOwner, getSessionAccessToken } from "./redisTransport.js";
+import { readMcpInstallation } from "../../auth/services/auth.js";
+import { logger } from "../../shared/logger.js";
+import { config } from "../../../config.js";
 
 type ToolInput = Tool["inputSchema"];
 
@@ -35,69 +44,62 @@ const EchoSchema = z.object({
   message: z.string().describe("Message to echo"),
 });
 
-const AddSchema = z.object({
-  a: z.number().describe("First number"),
-  b: z.number().describe("Second number"),
+
+const WalletGetSchema = z.object({});
+
+const DiscoverAgentsSchema = z.object({
+  name: z.string().optional().describe("Search by name (substring match)"),
+  mcpTools: z.array(z.string()).optional().describe("Filter by MCP tools"),
+  chains: z.union([
+    z.array(z.number()),
+    z.literal("all"),
+  ]).optional().describe("Chain IDs to search (array of numbers or 'all')"),
 });
 
-const LongRunningOperationSchema = z.object({
-  duration: z
-    .number()
-    .default(10)
-    .describe("Duration of the operation in seconds"),
-  steps: z.number().default(5).describe("Number of steps in the operation"),
+const AgentListToolsSchema = z.object({
+  agentId: z.string().describe("Agent ID (format: 'chainId:agentId' or just 'agentId' for default chain)"),
 });
 
-const SampleLLMSchema = z.object({
-  prompt: z.string().describe("The prompt to send to the LLM"),
-  maxTokens: z
-    .number()
-    .default(100)
-    .describe("Maximum number of tokens to generate"),
+const PaySchema = z.object({
+  resourceUrl: z.string().url().describe("URL of the resource/service requiring x402 payment"),
+  method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).optional().describe("HTTP method (default: GET)"),
+  body: z.string().optional().describe("Request body (for POST/PUT requests)"),
+  headers: z.record(z.string(), z.string()).optional().describe("Additional HTTP headers"),
+  walletAddress: z.string().optional().describe("Wallet address to use (defaults to first wallet)"),
 });
 
-// Example completion values
-const EXAMPLE_COMPLETIONS = {
-  style: ["casual", "formal", "technical", "friendly"],
-  temperature: ["0", "0.5", "0.7", "1.0"],
-  resourceId: ["1", "2", "3", "4", "5"],
-};
-
-const GetTinyImageSchema = z.object({});
-
-const AnnotatedMessageSchema = z.object({
-  messageType: z
-    .enum(["error", "success", "debug"])
-    .describe("Type of message to demonstrate different annotation patterns"),
-  includeImage: z
-    .boolean()
-    .default(false)
-    .describe("Whether to include an example image"),
+const WalletBalanceSchema = z.object({
+  walletAddress: z.string().optional().describe("x402 Wallet address to check (defaults to first wallet)"),
+  chainId: z.number().optional().describe("Chain ID (defaults to 8453 for Base)"),
+  tokenAddress: z.string().optional().describe("ERC20 token address (defaults to USDC on Base: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)"),
 });
 
-const GetResourceReferenceSchema = z.object({
-  resourceId: z
-    .number()
-    .min(1)
-    .max(100)
-    .describe("ID of the resource to reference (1-100)"),
+const WalletTransferTokenSchema = z.object({
+  to: z.string().describe("Recipient address"),
+  amount: z.string().describe("Amount of token to transfer (e.g., '100.5' for 100.5 tokens)"),
+  walletAddress: z.string().optional().describe("x402 Wallet address to use (defaults to first wallet)"),
+  chainId: z.number().optional().describe("Chain ID (defaults to 8453 for Base)"),
+  tokenAddress: z.string().optional().describe("ERC20 token address (defaults to USDC on Base: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)"),
+});
+
+const DiscoverBazaarResourcesSchema = z.object({
+  type: z.string().optional().describe("Filter by protocol type (e.g., 'http', 'mcp')"),
+  resource: z.string().optional().describe("Filter by resource URL substring"),
+  keyword: z.string().optional().describe("Search keyword - matches resource URL or description"),
+  limit: z.number().optional().describe("Maximum number of results to return (default: 50)"),
+  offset: z.number().optional().describe("Offset for pagination (default: 0)"),
 });
 
 enum ToolName {
   ECHO = "echo",
-  ADD = "add",
-  LONG_RUNNING_OPERATION = "longRunningOperation",
-  SAMPLE_LLM = "sampleLLM",
-  GET_TINY_IMAGE = "getTinyImage",
-  ANNOTATED_MESSAGE = "annotatedMessage",
-  GET_RESOURCE_REFERENCE = "getResourceReference",
-  ELICIT_INPUTS = "elicitInputs",
-  MCP_APPS_HELLO_WORLD = "mcp_apps_hello_world",
+  WALLET_GET = "get_x402_wallet",
+  WALLET_BALANCE = "get_x402_wallet_balance",
+  WALLET_TRANSFER = "transfer_x402_token",
+  DISCOVER_AGENTS = "discover_x402_agents",
+  AGENT_LIST_TOOLS = "list_x402_agent_tools",
+  PAY = "make_x402_payment",
+  DISCOVER_BAZAAR_RESOURCES = "search_x402_bazaar_resources",
 }
-
-// MCP Apps constants
-const RESOURCE_URI_META_KEY = "ui/resourceUri";
-const HELLO_WORLD_APP_URI = "ui://hello-world/app.html";
 
 enum PromptName {
   SIMPLE = "simple_prompt",
@@ -110,7 +112,7 @@ interface McpServerWrapper {
   cleanup: () => void;
 }
 
-export const createMcpServer = (): McpServerWrapper => {
+export const createMcpServer = (sessionId?: string): McpServerWrapper => {
   const server = new Server(
     {
       name: "example-servers/feature-reference",
@@ -181,33 +183,6 @@ export const createMcpServer = (): McpServerWrapper => {
     });
   }, 30000);
 
-  // Helper method to request sampling from client
-  const requestSampling = async (
-    context: string,
-    uri: string,
-    maxTokens: number = 100
-  ) => {
-    const request: CreateMessageRequest = {
-      method: "sampling/createMessage",
-      params: {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `Resource ${uri} context: ${context}`,
-            },
-          },
-        ],
-        systemPrompt: "You are a helpful test server.",
-        maxTokens,
-        temperature: 0.7,
-        includeContext: "thisServer",
-      },
-    };
-
-    return await server.request(request, CreateMessageResultSchema);
-  };
 
   const ALL_RESOURCES: Resource[] = Array.from({ length: 100 }, (_, i) => {
     const uri = `test://static/resource/${i + 1}`;
@@ -250,18 +225,8 @@ export const createMcpServer = (): McpServerWrapper => {
       nextCursor = btoa(endIndex.toString());
     }
 
-    // Add MCP Apps UI resources
-    const uiResources: Resource[] = [
-      {
-        uri: HELLO_WORLD_APP_URI,
-        name: "Hello World MCP App",
-        description: "Interactive UI for the mcp_apps_hello_world tool",
-        mimeType: "text/html;profile=mcp-app",
-      },
-    ];
-
     return {
-      resources: [...resources, ...uiResources],
+      resources,
       nextCursor,
     };
   });
@@ -291,20 +256,6 @@ export const createMcpServer = (): McpServerWrapper => {
       }
     }
 
-    // MCP Apps UI resources
-    if (uri === HELLO_WORLD_APP_URI) {
-      const distDir = path.join(import.meta.dirname, "../../../apps");
-      const html = await fs.readFile(path.join(distDir, "mcp-app.html"), "utf-8");
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "text/html;profile=mcp-app",
-            text: html,
-          },
-        ],
-      };
-    }
 
     throw new Error(`Unknown resource: ${uri}`);
   });
@@ -312,9 +263,6 @@ export const createMcpServer = (): McpServerWrapper => {
   server.setRequestHandler(SubscribeRequestSchema, async (request) => {
     const { uri } = request.params;
     subscriptions.add(uri);
-
-    // Request sampling from client when someone subscribes
-    await requestSampling("A new subscription was started", uri);
     return {};
   });
 
@@ -395,14 +343,6 @@ export const createMcpServer = (): McpServerWrapper => {
               text: "I understand. You've provided a complex prompt with temperature and style arguments. How would you like me to proceed?",
             },
           },
-          {
-            role: "user",
-            content: {
-              type: "image",
-              data: MCP_TINY_IMAGE,
-              mimeType: "image/png",
-            },
-          },
         ],
       };
     }
@@ -449,50 +389,39 @@ export const createMcpServer = (): McpServerWrapper => {
         inputSchema: toJsonSchema(EchoSchema),
       },
       {
-        name: ToolName.ADD,
-        description: "Adds two numbers",
-        inputSchema: toJsonSchema(AddSchema),
+        name: ToolName.WALLET_GET,
+        description: "Get or create x402 wallet for the authenticated agent/user (returns the first wallet, creates one if none exists)",
+        inputSchema: toJsonSchema(WalletGetSchema),
       },
       {
-        name: ToolName.LONG_RUNNING_OPERATION,
-        description:
-          "Demonstrates a long running operation with progress updates",
-        inputSchema: toJsonSchema(LongRunningOperationSchema),
+        name: ToolName.DISCOVER_AGENTS,
+        description: "Discover agents and services that support x402 payments",
+        inputSchema: toJsonSchema(DiscoverAgentsSchema),
       },
       {
-        name: ToolName.SAMPLE_LLM,
-        description: "Samples from an LLM using MCP's sampling feature",
-        inputSchema: toJsonSchema(SampleLLMSchema),
+        name: ToolName.AGENT_LIST_TOOLS,
+        description: "List capabilities/tools available from a specific agent",
+        inputSchema: toJsonSchema(AgentListToolsSchema),
       },
       {
-        name: ToolName.GET_TINY_IMAGE,
-        description: "Returns the MCP_TINY_IMAGE",
-        inputSchema: toJsonSchema(GetTinyImageSchema),
+        name: ToolName.PAY,
+        description: "Make x402 payment to a protected resource/service",
+        inputSchema: toJsonSchema(PaySchema),
       },
       {
-        name: ToolName.ANNOTATED_MESSAGE,
-        description:
-          "Demonstrates how annotations can be used to provide metadata about content",
-        inputSchema: toJsonSchema(AnnotatedMessageSchema),
+        name: ToolName.WALLET_BALANCE,
+        description: "Get ETH and USDC balances for an x402 wallet on Base network",
+        inputSchema: toJsonSchema(WalletBalanceSchema),
       },
       {
-        name: ToolName.GET_RESOURCE_REFERENCE,
-        description:
-          "Returns a resource reference that can be used by MCP clients",
-        inputSchema: toJsonSchema(GetResourceReferenceSchema),
+        name: ToolName.WALLET_TRANSFER,
+        description: "Transfer ERC20 token on any EVM chain (defaults to USDC on Base)",
+        inputSchema: toJsonSchema(WalletTransferTokenSchema),
       },
       {
-        name: ToolName.ELICIT_INPUTS,
-        description:
-          "Elicitation test tool that demonstrates how to request user input with various field types",
-        inputSchema: { type: "object" , properties: {} },
-      },
-      {
-        name: ToolName.MCP_APPS_HELLO_WORLD,
-        description:
-          "Demonstrates MCP Apps - returns an interactive UI that runs in the client",
-        inputSchema: { type: "object", properties: {} },
-        _meta: { [RESOURCE_URI_META_KEY]: HELLO_WORLD_APP_URI },
+        name: ToolName.DISCOVER_BAZAAR_RESOURCES,
+        description: "Discover x402-protected resources from the Facilitator's Bazaar",
+        inputSchema: toJsonSchema(DiscoverBazaarResourcesSchema),
       },
     ];
 
@@ -509,266 +438,519 @@ export const createMcpServer = (): McpServerWrapper => {
       };
     }
 
-    if (name === ToolName.ADD) {
-      const validatedArgs = AddSchema.parse(args);
-      const sum = validatedArgs.a + validatedArgs.b;
-      return {
-        content: [
-          {
-            type: "text",
-            text: `The sum of ${validatedArgs.a} and ${validatedArgs.b} is ${sum}.`,
-          },
-        ],
-      };
+    // Helper function to get user context from session
+    const getUserContext = async () => {
+      if (!sessionId) {
+        throw new Error("Session ID required for wallet operations");
+      }
+      const userId = await getSessionOwner(sessionId);
+      if (!userId) {
+        throw new Error("User ID not found for session");
+      }
+      const accessToken = await getSessionAccessToken(sessionId);
+      if (!accessToken) {
+        logger.error("Access token not found in session", undefined, { sessionId, userId });
+        throw new Error("Access token not found for session. Please re-authenticate.");
+      }
+      logger.debug("Reading MCP installation", { sessionId, userId, accessTokenLength: accessToken.length });
+      const installation = await readMcpInstallation(accessToken);
+      
+      let oauthAccessToken: string;
+      if (installation) {
+        // Internal auth mode: use the upstream OAuth token from the installation
+        oauthAccessToken = installation.mockUpstreamInstallation.mockUpstreamAccessToken;
+        logger.debug("Using OAuth token from MCP installation", { sessionId, userId });
+      } else if (config.auth.mode === 'external') {
+        // External auth mode (e.g., Auth0): use the access token directly
+        // In external mode, the access token is the OAuth token (e.g., Auth0 JWT)
+        oauthAccessToken = accessToken;
+        logger.debug("Using access token directly (external auth mode)", { 
+          sessionId, 
+          userId, 
+          authMode: config.auth.mode,
+          provider: config.auth.provider
+        });
+      } else {
+        // Internal mode but installation not found - this shouldn't happen
+        logger.error("MCP installation not found", undefined, { 
+          sessionId, 
+          userId, 
+          accessTokenLength: accessToken.length,
+          accessTokenPrefix: accessToken.substring(0, 20) + "...",
+          authMode: config.auth.mode
+        });
+        throw new Error(`Installation not found for access token. Token may be invalid or expired. Please re-authenticate.`);
+      }
+      
+      return { userId, oauthAccessToken };
+    };
+
+    if (name === ToolName.WALLET_GET) {
+      try {
+        WalletGetSchema.parse(args);
+        const { userId, oauthAccessToken } = await getUserContext();
+        
+        logger.debug("Getting or creating wallet", { userId });
+        let pkps = await getPKPsForAuthMethod(userId);
+        
+        // If no wallet exists, create one
+        let pkp;
+        if (pkps.length === 0) {
+          logger.debug("No wallet found, creating new wallet", { userId });
+          pkp = await mintPKP(userId, oauthAccessToken);
+        } else {
+          // Use the first wallet
+          pkp = pkps[0];
+        }
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                wallet: {
+                  address: pkp.ethAddress,
+                  publicKey: pkp.publicKey,
+                  tokenId: pkp.tokenId,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to get or create wallet", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting or creating wallet: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
     }
 
-    if (name === ToolName.LONG_RUNNING_OPERATION) {
-      const validatedArgs = LongRunningOperationSchema.parse(args);
-      const { duration, steps } = validatedArgs;
-      const stepDuration = duration / steps;
-      const progressToken = request.params._meta?.progressToken;
+    if (name === ToolName.DISCOVER_AGENTS) {
+      try {
+        const validatedArgs = DiscoverAgentsSchema.parse(args);
+        const searchParams: any = {
+          x402support: true,
+        };
+        
+        if (validatedArgs.name) {
+          searchParams.name = validatedArgs.name;
+        }
+        if (validatedArgs.mcpTools) {
+          searchParams.mcpTools = validatedArgs.mcpTools;
+        }
+        if (validatedArgs.chains) {
+          searchParams.chains = validatedArgs.chains;
+        }
+        
+        logger.debug("Discovering agents", searchParams);
+        const result = await searchAgents(searchParams);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                agents: result.items.map(agent => ({
+                  agentId: agent.agentId,
+                  name: agent.name,
+                  description: agent.description,
+                  mcpTools: agent.mcpTools,
+                  a2aSkills: agent.a2aSkills,
+                  active: agent.active,
+                })),
+                nextCursor: result.nextCursor,
+                total: result.items.length,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Agent discovery failed", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error discovering agents: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
 
-      for (let i = 1; i < steps + 1; i++) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, stepDuration * 1000)
+    if (name === ToolName.AGENT_LIST_TOOLS) {
+      try {
+        const validatedArgs = AgentListToolsSchema.parse(args);
+        
+        logger.debug("Getting agent tools", { agentId: validatedArgs.agentId });
+        const agent = await getAgent(validatedArgs.agentId);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                agentId: agent.agentId,
+                name: agent.name,
+                mcpTools: agent.mcpTools || [],
+                a2aSkills: agent.a2aSkills || [],
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to get agent tools", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting agent tools: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.PAY) {
+      try {
+        const validatedArgs = PaySchema.parse(args);
+        const { userId, oauthAccessToken } = await getUserContext();
+        
+        // Get user's PKPs
+        const pkps = await getPKPsForAuthMethod(userId);
+        if (pkps.length === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "No wallets found. Please create a wallet first using wallet_create.",
+              },
+            ],
+          };
+        }
+        
+        // Find the PKP to use (by address if specified, otherwise first one)
+        let pkp: PKP;
+        if (validatedArgs.walletAddress) {
+          pkp = pkps.find(p => p.ethAddress.toLowerCase() === validatedArgs.walletAddress!.toLowerCase())!;
+          if (!pkp) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Wallet address ${validatedArgs.walletAddress} not found.`,
+                },
+              ],
+            };
+          }
+        } else {
+          pkp = pkps[0];
+        }
+        
+        // Get session signatures for the PKP
+        logger.debug("Getting PKP session signatures", { pkpAddress: pkp.ethAddress });
+        const sessionSigs = await getPkpSessionSigs(userId, oauthAccessToken, pkp);
+        
+        // Create PKP account
+        const pkpAccount = new PKPAccount({
+          address: pkp.ethAddress as `0x${string}`,
+          publicKey: pkp.publicKey as `0x${string}`,
+          sessionSigs,
+        });
+        
+        // Make payment
+        logger.debug("Making payment", { resourceUrl: validatedArgs.resourceUrl });
+        const { response, paymentResponse } = await makePayment(pkpAccount, validatedArgs.resourceUrl, {
+          method: validatedArgs.method,
+          body: validatedArgs.body,
+          headers: validatedArgs.headers as Record<string, string> | undefined,
+        });
+        
+        // Get response data
+        const contentType = response.headers.get("content-type");
+        let data: any;
+        if (contentType?.includes("application/json")) {
+          data = await response.json();
+        } else {
+          data = await response.text();
+        }
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: response.ok,
+                status: response.status,
+                data,
+                payment: paymentResponse ? {
+                  settled: true,
+                  payer: paymentResponse.from,
+                  payee: paymentResponse.to,
+                  amount: paymentResponse.value,
+                  transactionHash: paymentResponse.transactionHash,
+                } : null,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Payment failed", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error making payment: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.WALLET_BALANCE) {
+      try {
+        const validatedArgs = WalletBalanceSchema.parse(args);
+        const { userId, oauthAccessToken } = await getUserContext();
+        
+        // Get user's PKPs
+        const pkps = await getPKPsForAuthMethod(userId);
+        if (pkps.length === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "No wallets found. Please create a wallet first using wallet_create.",
+              },
+            ],
+          };
+        }
+        
+        // Find the PKP to use (by address if specified, otherwise first one)
+        let pkp: PKP;
+        if (validatedArgs.walletAddress) {
+          pkp = pkps.find(p => p.ethAddress.toLowerCase() === validatedArgs.walletAddress!.toLowerCase())!;
+          if (!pkp) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Wallet address ${validatedArgs.walletAddress} not found.`,
+                },
+              ],
+            };
+          }
+        } else {
+          pkp = pkps[0];
+        }
+        
+        // Get balances
+        logger.debug("Getting wallet balances", { 
+          walletAddress: pkp.ethAddress,
+          chainId: validatedArgs.chainId,
+          tokenAddress: validatedArgs.tokenAddress,
+        });
+        const balances = await getBalances(pkp.ethAddress as `0x${string}`, {
+          chainId: validatedArgs.chainId,
+          tokenAddress: validatedArgs.tokenAddress as `0x${string}` | undefined,
+        });
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                walletAddress: pkp.ethAddress,
+                chainId: balances.chainId,
+                tokenAddress: balances.tokenAddress,
+                balances: {
+                  native: balances.native,
+                  token: balances.token,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to get wallet balances", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting wallet balances: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.WALLET_TRANSFER) {
+      try {
+        const validatedArgs = WalletTransferTokenSchema.parse(args);
+        const { userId, oauthAccessToken } = await getUserContext();
+        
+        // Get user's PKPs
+        const pkps = await getPKPsForAuthMethod(userId);
+        if (pkps.length === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "No wallets found. Please create a wallet first using wallet_create.",
+              },
+            ],
+          };
+        }
+        
+        // Find the PKP to use (by address if specified, otherwise first one)
+        let pkp: PKP;
+        if (validatedArgs.walletAddress) {
+          pkp = pkps.find(p => p.ethAddress.toLowerCase() === validatedArgs.walletAddress!.toLowerCase())!;
+          if (!pkp) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Wallet address ${validatedArgs.walletAddress} not found.`,
+                },
+              ],
+            };
+          }
+        } else {
+          pkp = pkps[0];
+        }
+        
+        // Get session signatures for the PKP
+        logger.debug("Getting PKP session signatures", { pkpAddress: pkp.ethAddress });
+        const sessionSigs = await getPkpSessionSigs(userId, oauthAccessToken, pkp);
+        
+        // Create PKP account
+        const pkpAccount = new PKPAccount({
+          address: pkp.ethAddress as `0x${string}`,
+          publicKey: pkp.publicKey as `0x${string}`,
+          sessionSigs,
+        });
+        
+        // Transfer token
+        logger.debug("Transferring token", { 
+          from: pkp.ethAddress, 
+          to: validatedArgs.to, 
+          amount: validatedArgs.amount,
+          chainId: validatedArgs.chainId,
+          tokenAddress: validatedArgs.tokenAddress,
+        });
+        const result = await transferToken(
+          pkpAccount,
+          validatedArgs.to as `0x${string}`,
+          validatedArgs.amount,
+          {
+            chainId: validatedArgs.chainId,
+            tokenAddress: validatedArgs.tokenAddress as `0x${string}` | undefined,
+            sessionSigs, // Pass sessionSigs for gas sponsorship
+          }
         );
-
-        if (progressToken !== undefined) {
-          await server.notification({
-            method: "notifications/progress",
-            params: {
-              progress: i,
-              total: steps,
-              progressToken,
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                transactionHash: result.transactionHash,
+                from: pkp.ethAddress,
+                to: validatedArgs.to,
+                amount: validatedArgs.amount,
+                chainId: result.chainId,
+                tokenAddress: result.tokenAddress,
+              }, null, 2),
             },
-          });
-        }
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Long running operation completed. Duration: ${duration} seconds, Steps: ${steps}.`,
-          },
-        ],
-      };
-    }
-
-    if (name === ToolName.SAMPLE_LLM) {
-      const validatedArgs = SampleLLMSchema.parse(args);
-      const { prompt, maxTokens } = validatedArgs;
-
-      const result = await requestSampling(
-        prompt,
-        ToolName.SAMPLE_LLM,
-        maxTokens
-      );
-      const contentArray = Array.isArray(result.content) ? result.content : [result.content];
-      const firstContent = contentArray[0];
-      const textContent = firstContent && "text" in firstContent ? firstContent.text : JSON.stringify(result.content);
-      return {
-        content: [
-          { type: "text", text: `LLM sampling result: ${textContent}` },
-        ],
-      };
-    }
-
-    if (name === ToolName.GET_TINY_IMAGE) {
-      GetTinyImageSchema.parse(args);
-      return {
-        content: [
-          {
-            type: "text",
-            text: "This is a tiny image:",
-          },
-          {
-            type: "image",
-            data: MCP_TINY_IMAGE,
-            mimeType: "image/png",
-          },
-          {
-            type: "text",
-            text: "The image above is the MCP tiny image.",
-          },
-        ],
-      };
-    }
-
-    if (name === ToolName.GET_RESOURCE_REFERENCE) {
-      const validatedArgs = GetResourceReferenceSchema.parse(args);
-      const resourceId = validatedArgs.resourceId;
-
-      const resourceIndex = resourceId - 1;
-      if (resourceIndex < 0 || resourceIndex >= ALL_RESOURCES.length) {
-        throw new Error(`Resource with ID ${resourceId} does not exist`);
-      }
-
-      const resource = ALL_RESOURCES[resourceIndex];
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Returning resource reference for Resource ${resourceId}:`,
-          },
-          {
-            type: "resource",
-            resource: resource,
-          },
-          {
-            type: "text",
-            text: `You can access this resource using the URI: ${resource.uri}`,
-          },
-        ],
-      };
-    }
-
-    if (name === ToolName.ANNOTATED_MESSAGE) {
-      const { messageType, includeImage } = AnnotatedMessageSchema.parse(args);
-
-      const content = [];
-
-      // Main message with different priorities/audiences based on type
-      if (messageType === "error") {
-        content.push({
-          type: "text",
-          text: "Error: Operation failed",
-          annotations: {
-            priority: 1.0, // Errors are highest priority
-            audience: ["user", "assistant"], // Both need to know about errors
-          },
-        });
-      } else if (messageType === "success") {
-        content.push({
-          type: "text",
-          text: "Operation completed successfully",
-          annotations: {
-            priority: 0.7, // Success messages are important but not critical
-            audience: ["user"], // Success mainly for user consumption
-          },
-        });
-      } else if (messageType === "debug") {
-        content.push({
-          type: "text",
-          text: "Debug: Cache hit ratio 0.95, latency 150ms",
-          annotations: {
-            priority: 0.3, // Debug info is low priority
-            audience: ["assistant"], // Technical details for assistant
-          },
-        });
-      }
-
-      // Optional image with its own annotations
-      if (includeImage) {
-        content.push({
-          type: "image",
-          data: MCP_TINY_IMAGE,
-          mimeType: "image/png",
-          annotations: {
-            priority: 0.5,
-            audience: ["user"], // Images primarily for user visualization
-          },
-        });
-      }
-
-      return { content };
-    }
-
-    if (name === ToolName.ELICIT_INPUTS) {
-      const result = await extra.sendRequest({
-        method: 'elicitation/create',
-        params: {
-          message: "Please provide inputs for the following fields:",
-          requestedSchema: {
-            type: "object",
-            properties: {
-              name: {
-                title: "Full Name",
-                type: "string",
-                description: "Your full, legal name",
-              },
-              check: {
-                title: "Agree to terms",
-                type: "boolean",
-                description: "A boolean check",
-              },
-              color: {
-                title: "Favorite Color",
-                type: "string",
-                description: "Favorite color (open text)",
-                default: "blue",
-              },
-              email: {
-                title: "Email Address",
-                type: "string",
-                format: "email",
-                description:
-                  "Your email address (will be verified, and never shared with anyone else)",
-              },
-              homepage: {
-                type: "string",
-                format: "uri",
-                description: "Homepage / personal site",
-              },
-              birthdate: {
-                title: "Birthdate",
-                type: "string",
-                format: "date",
-                description:
-                  "Your date of birth (will never be shared with anyone else)",
-              },
-              integer: {
-                title: "Favorite Integer",
-                type: "integer",
-                description:
-                  "Your favorite integer (do not give us your phone number, pin, or other sensitive info)",
-                minimum: 1,
-                maximum: 100,
-                default: 42,
-              },
-              number: {
-                title: "Favorite Number",
-                type: "number",
-                description: "Favorite number (there are no wrong answers)",
-                minimum: 0,
-                maximum: 1000,
-                default: 3.14,
-              },
-              petType: {
-                title: "Pet type",
-                type: "string",
-                enum: ["cats", "dogs", "birds", "fish", "reptiles"],
-                enumNames: ["Cats", "Dogs", "Birds", "Fish", "Reptiles"],
-                default: "dogs",
-                description: "Your favorite pet type",
-              },
+          ],
+        };
+      } catch (error) {
+        logger.error("Token transfer failed", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error transferring token: ${(error as Error).message}`,
             },
-            required: ["name"],
-          },
-        }
-      }, ElicitResultSchema, {timeout: 10 * 60 * 1000 /* 10 minutes */});
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Elicitation result: ${JSON.stringify(result, null, 2)}`,
-          },
-        ],
-      };
+          ],
+        };
+      }
     }
 
-    if (name === ToolName.MCP_APPS_HELLO_WORLD) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "If this client supports MCP Apps, an interactive UI should have rendered for the user.",
-          },
-        ],
-        _meta: { [RESOURCE_URI_META_KEY]: HELLO_WORLD_APP_URI },
-      };
+    if (name === ToolName.DISCOVER_BAZAAR_RESOURCES) {
+      try {
+        const validatedArgs = DiscoverBazaarResourcesSchema.parse(args);
+        
+        logger.debug("Discovering bazaar resources", validatedArgs);
+        const result = await queryCachedResources({
+          type: validatedArgs.type,
+          resource: validatedArgs.resource,
+          keyword: validatedArgs.keyword,
+          limit: validatedArgs.limit,
+          offset: validatedArgs.offset,
+        });
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                resources: result.items.map(resource => ({
+                  resource: resource.resource,
+                  type: resource.type,
+                  lastUpdated: resource.lastUpdated,
+                  accepts: resource.accepts.map(accept => ({
+                    asset: accept.asset,
+                    network: accept.network,
+                    scheme: accept.scheme,
+                    maxAmountRequired: accept.maxAmountRequired,
+                    description: accept.description,
+                  })),
+                  x402Version: resource.x402Version,
+                })),
+                pagination: {
+                  total: result.total,
+                  limit: result.limit,
+                  offset: result.offset,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Bazaar resource discovery failed", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error discovering bazaar resources: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
     }
 
     throw new Error(`Unknown tool: ${name}`);
@@ -778,26 +960,11 @@ export const createMcpServer = (): McpServerWrapper => {
     const { ref, argument } = request.params;
 
     if (ref.type === "ref/resource") {
-      const resourceId = ref.uri.split("/").pop();
-      if (!resourceId) return { completion: { values: [] } };
-
-      // Filter resource IDs that start with the input value
-      const values = EXAMPLE_COMPLETIONS.resourceId.filter((id) =>
-        id.startsWith(argument.value)
-      );
-      return { completion: { values, hasMore: false, total: values.length } };
+      return { completion: { values: [], hasMore: false, total: 0 } };
     }
 
     if (ref.type === "ref/prompt") {
-      // Handle completion for prompt arguments
-      const completions =
-        EXAMPLE_COMPLETIONS[argument.name as keyof typeof EXAMPLE_COMPLETIONS];
-      if (!completions) return { completion: { values: [] } };
-
-      const values = completions.filter((value) =>
-        value.startsWith(argument.value)
-      );
-      return { completion: { values, hasMore: false, total: values.length } };
+      return { completion: { values: [], hasMore: false, total: 0 } };
     }
 
     throw new Error(`Unknown reference type`);
@@ -828,6 +995,3 @@ export const createMcpServer = (): McpServerWrapper => {
 
   return { server, cleanup };
 };
-
-const MCP_TINY_IMAGE =
-  "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";
