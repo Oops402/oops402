@@ -6,7 +6,7 @@
 import { SDK } from "agent0-sdk";
 import { logger } from "../shared/logger.js";
 
-const AGENT0_CHAIN_ID = parseInt(process.env.AGENT0_CHAIN_ID || "11155111", 10);
+const AGENT0_CHAIN_ID = parseInt(process.env.AGENT0_CHAIN_ID || "84532", 10);
 const AGENT0_RPC_URL = process.env.AGENT0_RPC_URL || "https://sepolia.infura.io/v3/YOUR_PROJECT_ID";
 
 let sdkInstance: SDK | null = null;
@@ -38,6 +38,8 @@ export interface AgentSummary {
 
 export interface SearchAgentsParams {
   name?: string;
+  mcp?: boolean;
+  a2a?: boolean;
   mcpTools?: string[];
   a2aSkills?: string[];
   mcpPrompts?: string[];
@@ -117,6 +119,61 @@ export async function getAgent(agentId: string): Promise<AgentSummary> {
   } catch (error) {
     logger.error("Failed to get agent", error as Error, { agentId });
     throw new Error(`Failed to get agent ${agentId}: ${(error as Error).message}`);
+  }
+}
+
+export interface SearchAgentsByReputationParams {
+  agents?: string[];
+  tags?: string[];
+  reviewers?: string[];
+  capabilities?: string[];
+  skills?: string[];
+  tasks?: string[];
+  names?: string[];
+  minAverageScore?: number;
+  includeRevoked?: boolean;
+  pageSize?: number;
+  cursor?: string;
+  sort?: string[];
+  chains?: number[] | "all";
+}
+
+/**
+ * Search for agents by reputation/rating
+ */
+export async function searchAgentsByReputation(
+  params: SearchAgentsByReputationParams = {}
+): Promise<SearchAgentsResult> {
+  const sdk = getSDK();
+  
+  logger.debug("Searching agents by reputation", params as any);
+
+  try {
+    const result = await sdk.searchAgentsByReputation(
+      params.agents,
+      params.tags,
+      params.reviewers,
+      params.capabilities,
+      params.skills,
+      params.tasks,
+      params.names,
+      params.minAverageScore,
+      params.includeRevoked,
+      params.pageSize,
+      params.cursor,
+      params.sort,
+      params.chains
+    );
+    
+    logger.debug("Found agents by reputation", { 
+      count: result.items.length,
+      hasNextCursor: !!result.nextCursor 
+    });
+
+    return result;
+  } catch (error) {
+    logger.error("Failed to search agents by reputation", error as Error, params as any);
+    throw new Error(`Failed to search agents by reputation: ${(error as Error).message}`);
   }
 }
 

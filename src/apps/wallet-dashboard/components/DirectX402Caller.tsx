@@ -1,13 +1,16 @@
 import { useState } from "react";
+import { CloseIcon } from "./icons";
 import { formatAmountDisplay } from "../utils/formatting";
 import { PaymentResult } from "../types";
 import { styles } from "../styles";
 
 interface DirectX402CallerProps {
   walletAddress: string;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
-export function DirectX402Caller({ walletAddress }: DirectX402CallerProps) {
+export function DirectX402Caller({ walletAddress, isOpen, onClose }: DirectX402CallerProps) {
   const [resourceUrl, setResourceUrl] = useState<string>("");
   const [method, setMethod] = useState<string>("GET");
   const [queryParams, setQueryParams] = useState<string>("");
@@ -115,10 +118,21 @@ export function DirectX402Caller({ walletAddress }: DirectX402CallerProps) {
     }
   };
 
+  if (!isOpen) return null;
+
   return (
-    <div style={styles.section}>
-      <h2 style={styles.sectionTitle}>Call x402 Resource Directly</h2>
-      <div style={styles.directCallerCard}>
+    <div style={styles.modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={{ ...styles.modalContent, maxWidth: "800px", maxHeight: "90vh" }}>
+        <div style={styles.modalHeader}>
+          <h2 style={styles.modalTitle}>Call x402 Resource Directly</h2>
+          <button
+            onClick={onClose}
+            style={styles.closeButton}
+            aria-label="Close"
+          >
+            <CloseIcon />
+          </button>
+        </div>
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.formGroup}>
             <label style={styles.label}>Resource URL</label>

@@ -115,6 +115,10 @@ table.discovery-table th {
     width: 100%;
   }
   
+  .user-name {
+    max-width: 100px !important;
+  }
+  
   .wallet-actions {
     flex-direction: column;
   }
@@ -142,6 +146,12 @@ table.discovery-table th {
 
 @media (min-width: 641px) {
   .discovery-mobile-cards {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .user-name {
     display: none;
   }
 }

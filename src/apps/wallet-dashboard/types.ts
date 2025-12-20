@@ -61,3 +61,34 @@ export interface PaymentResult {
   };
 }
 
+export interface AgentSummary {
+  agentId: string;
+  chainId: number;
+  name: string;
+  description?: string;
+  image?: string;
+  active: boolean;
+  owners: string[];
+  operators: string[];
+  walletAddress?: string;
+  mcpTools?: string[];
+  a2aSkills?: string[];
+  averageScore?: number | null;
+}
+
+export interface AgentSearchResponse {
+  success: boolean;
+  items: AgentSummary[];
+  nextCursor?: string;
+  meta?: {
+    chains: number[];
+    successfulChains: number[];
+    failedChains: number[];
+    totalResults: number;
+    timing: {
+      totalMs: number;
+      averagePerChainMs?: number;
+    };
+  };
+}
+

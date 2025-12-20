@@ -10,6 +10,7 @@ import { TransferModal } from "./components/TransferModal";
 import { ReceiveModal } from "./components/ReceiveModal";
 import { PaymentModal } from "./components/PaymentModal";
 import { DiscoverySection } from "./components/DiscoverySection";
+import { AgentSearchSection } from "./components/AgentSearchSection";
 import { DirectX402Caller } from "./components/DirectX402Caller";
 import { styles } from "./styles";
 import "./styles.css";
@@ -37,6 +38,8 @@ function WalletDashboard() {
     acceptIndex: number;
     discoveryItem: DiscoveryItem;
   } | null>(null);
+  const [activeTab, setActiveTab] = useState<"wallet" | "discovery" | "agents">("wallet");
+  const [directCallerModalOpen, setDirectCallerModalOpen] = useState(false);
 
   // Fetch wallet and profile on mount
   useEffect(() => {
@@ -209,29 +212,48 @@ function WalletDashboard() {
           <h1 style={styles.title}>x402 Wallet</h1>
         </div>
         <div style={styles.headerActions} className="header-actions">
+          {balance && (
+            <div style={styles.headerBalance}>
+              <span style={styles.headerBalanceLabel}>Balance</span>
+              <span style={styles.headerBalanceAmount}>
+                {formatBalance(balance.balance)} {balance.symbol}
+              </span>
+            </div>
+          )}
           {userProfile && (
             <div style={styles.userProfile}>
               {userProfile.picture && !avatarError ? (
                 <img 
                   src={userProfile.picture} 
-                  alt={userProfile.nickname || userProfile.name || "User"} 
+                  alt={userProfile.name || userProfile.nickname || "User"} 
                   style={styles.userAvatar}
                   onError={() => setAvatarError(true)}
                   crossOrigin="anonymous"
                   referrerPolicy="no-referrer"
+                  title={userProfile.name || userProfile.nickname || "User"}
                 />
               ) : (
-                <div style={styles.userAvatarFallback}>
-                  {(userProfile.nickname || userProfile.name || "U").charAt(0).toUpperCase()}
+                <div 
+                  style={styles.userAvatarFallback}
+                  title={userProfile.name || userProfile.nickname || "User"}
+                >
+                  {(userProfile.name || userProfile.nickname || "U").charAt(0).toUpperCase()}
                 </div>
               )}
-              <span style={styles.userName}>
-                {userProfile.nickname || userProfile.name || "User"}
-              </span>
             </div>
           )}
-          <a href="/" style={styles.link} className="link">← Home</a>
-          <a href="/logout" style={styles.link} className="link">Logout</a>
+          <a href="/" style={styles.link} className="link">
+            <svg style={styles.linkIcon} viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+            </svg>
+            <span>Home</span>
+          </a>
+          <a href="/logout" style={styles.link} className="link">
+            <svg style={styles.linkIcon} viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clipRule="evenodd" />
+            </svg>
+            <span>Logout</span>
+          </a>
         </div>
       </header>
 
@@ -242,32 +264,90 @@ function WalletDashboard() {
         </div>
       )}
 
-      <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>Your Wallet</h2>
+      <div style={styles.tabs}>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "wallet" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("wallet")}
+          className={activeTab === "wallet" ? "tab-active" : ""}
+        >
+          <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
+            <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
+            <path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" />
+          </svg>
+          <span>Wallet</span>
+        </button>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "discovery" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("discovery")}
+          className={activeTab === "discovery" ? "tab-active" : ""}
+        >
+          <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+          </svg>
+          <span>Bazaar</span>
+        </button>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "agents" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("agents")}
+          className={activeTab === "agents" ? "tab-active" : ""}
+        >
+          <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+          </svg>
+          <span>Agents</span>
+        </button>
+      </div>
 
-        {wallet ? (
-          <WalletCard
-            wallet={wallet}
-            balance={balance}
-            copiedAddress={copiedAddress}
-            refreshingBalance={refreshingBalance}
-            onCopyAddress={handleCopyAddress}
-            onRefreshBalance={handleRefreshBalance}
-            onSend={() => setTransferForm({
-              to: "",
-              amount: "",
-              chainId: 8453,
-              tokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            })}
-            onReceive={() => setReceiveModal({ address: wallet.address })}
-          />
-        ) : (
-          <div style={styles.emptyCard}>
-            <div style={styles.emptyIcon}>💼</div>
-            <h3 style={styles.emptyTitle}>Loading wallet...</h3>
-            <p style={styles.emptyText}>Your wallet is being created or loaded.</p>
-          </div>
-        )}
+      <div style={activeTab === "wallet" ? styles.tabContent : styles.tabContentHidden}>
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>Your Wallet</h2>
+
+          {wallet ? (
+            <WalletCard
+              wallet={wallet}
+              balance={balance}
+              copiedAddress={copiedAddress}
+              refreshingBalance={refreshingBalance}
+              onCopyAddress={handleCopyAddress}
+              onRefreshBalance={handleRefreshBalance}
+              onSend={() => setTransferForm({
+                to: "",
+                amount: "",
+                chainId: 8453,
+                tokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              })}
+              onReceive={() => setReceiveModal({ address: wallet.address })}
+            />
+          ) : (
+            <div style={styles.emptyCard}>
+              <div style={styles.emptyIcon}>💼</div>
+              <h3 style={styles.emptyTitle}>Loading wallet...</h3>
+              <p style={styles.emptyText}>Your wallet is being created or loaded.</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={activeTab === "discovery" ? styles.tabContent : styles.tabContentHidden}>
+        <DiscoverySection
+          onPay={(resourceUrl, acceptIndex, discoveryItem) => {
+            setPaymentModal({ resourceUrl, acceptIndex, discoveryItem });
+          }}
+          onOpenDirectCaller={() => setDirectCallerModalOpen(true)}
+        />
+      </div>
+
+      <div style={activeTab === "agents" ? styles.tabContent : styles.tabContentHidden}>
+        <AgentSearchSection />
       </div>
 
       {transferForm && wallet && (
@@ -296,16 +376,6 @@ function WalletDashboard() {
         />
       )}
 
-      {wallet && (
-        <DirectX402Caller walletAddress={wallet.address} />
-      )}
-
-      <DiscoverySection
-        onPay={(resourceUrl, acceptIndex, discoveryItem) => {
-          setPaymentModal({ resourceUrl, acceptIndex, discoveryItem });
-        }}
-      />
-
       {paymentModal && wallet && (
         <PaymentModal
           isOpen={!!paymentModal}
@@ -314,6 +384,14 @@ function WalletDashboard() {
           acceptIndex={paymentModal.acceptIndex}
           discoveryItem={paymentModal.discoveryItem}
           walletAddress={wallet.address}
+        />
+      )}
+
+      {wallet && (
+        <DirectX402Caller
+          walletAddress={wallet.address}
+          isOpen={directCallerModalOpen}
+          onClose={() => setDirectCallerModalOpen(false)}
         />
       )}
     </div>

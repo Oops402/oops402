@@ -6,21 +6,32 @@ import { styles } from "../styles";
 
 interface DiscoverySectionProps {
   onPay: (resourceUrl: string, acceptIndex: number, item: DiscoveryItem) => void;
+  onOpenDirectCaller?: () => void;
 }
 
-export function DiscoverySection({ onPay }: DiscoverySectionProps) {
+export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySectionProps) {
   const [items, setItems] = useState<DiscoveryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const [copiedAssets, setCopiedAssets] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [pagination, setPagination] = useState<{
+    limit: number;
+    offset: number;
+    total: number;
+  }>({
+    limit: 10,
+    offset: 0,
+    total: 0,
+  });
 
   useEffect(() => {
-    loadDiscoveryItems();
+    loadDiscoveryItems(pagination.offset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadDiscoveryItems = async () => {
+  const loadDiscoveryItems = async (offset?: number) => {
     setLoading(true);
     setError(null);
     try {
@@ -28,6 +39,10 @@ export function DiscoverySection({ onPay }: DiscoverySectionProps) {
       if (searchQuery) {
         params.append('keyword', searchQuery);
       }
+      const currentOffset = offset !== undefined ? offset : pagination.offset;
+      params.append('offset', currentOffset.toString());
+      params.append('limit', pagination.limit.toString());
+      
       const response = await fetch(`/api/discover/bazaar?${params.toString()}`, {
         credentials: "include",
       });
@@ -36,11 +51,36 @@ export function DiscoverySection({ onPay }: DiscoverySectionProps) {
       }
       const data: DiscoveryResponse = await response.json();
       setItems(data.items || []);
+      if (data.pagination) {
+        setPagination({
+          limit: data.pagination.limit,
+          offset: data.pagination.offset,
+          total: data.pagination.total,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load discovery items");
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSearch = () => {
+    loadDiscoveryItems(0);
+  };
+
+  const handlePrevious = () => {
+    if (pagination.offset > 0) {
+      const newOffset = Math.max(0, pagination.offset - pagination.limit);
+      loadDiscoveryItems(newOffset);
+    }
+  };
+
+  const handleNext = () => {
+    if (pagination.offset + pagination.limit < pagination.total) {
+      const newOffset = pagination.offset + pagination.limit;
+      loadDiscoveryItems(newOffset);
     }
   };
 
@@ -61,7 +101,18 @@ export function DiscoverySection({ onPay }: DiscoverySectionProps) {
 
   return (
     <div style={styles.section}>
-      <h2 style={styles.sectionTitle}>Discover x402 Services</h2>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.sectionTitle}>Discover x402 Services</h2>
+        {onOpenDirectCaller && (
+          <button
+            onClick={onOpenDirectCaller}
+            style={styles.button}
+            className="button"
+          >
+            Direct Call
+          </button>
+        )}
+      </div>
       <div style={styles.discoveryContent}>
         <div style={styles.searchContainer} className="search-container">
           <input
@@ -73,12 +124,12 @@ export function DiscoverySection({ onPay }: DiscoverySectionProps) {
             className="input"
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                loadDiscoveryItems();
+                handleSearch();
               }
             }}
           />
           <button
-            onClick={loadDiscoveryItems}
+            onClick={handleSearch}
             style={styles.button}
             className="button"
           >
@@ -214,6 +265,37 @@ export function DiscoverySection({ onPay }: DiscoverySectionProps) {
             </div>
           )}
         </div>
+        {pagination.total > 0 && (
+          <div style={styles.pagination}>
+            <div style={styles.paginationInfo}>
+              Showing {pagination.offset + 1} - {Math.min(pagination.offset + pagination.limit, pagination.total)} of {pagination.total}
+            </div>
+            <div style={styles.paginationControls}>
+              <button
+                onClick={handlePrevious}
+                style={{
+                  ...styles.buttonSecondary,
+                  ...(pagination.offset === 0 ? { opacity: 0.5, cursor: "not-allowed" } : {}),
+                }}
+                className="button-secondary"
+                disabled={pagination.offset === 0 || loading}
+              >
+                Previous
+              </button>
+              <button
+                onClick={handleNext}
+                style={{
+                  ...styles.buttonSecondary,
+                  ...(pagination.offset + pagination.limit >= pagination.total ? { opacity: 0.5, cursor: "not-allowed" } : {}),
+                }}
+                className="button-secondary"
+                disabled={pagination.offset + pagination.limit >= pagination.total || loading}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

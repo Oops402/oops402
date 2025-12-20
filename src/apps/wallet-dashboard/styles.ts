@@ -65,6 +65,30 @@ export const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "flex-end",
   },
+  headerBalance: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: "0.25rem",
+    padding: "0.5rem 1rem",
+    background: "#f5f7fa",
+    borderRadius: "8px",
+  },
+  headerBalanceLabel: {
+    fontSize: "0.75rem",
+    color: "#666",
+    fontWeight: 500,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+  headerBalanceAmount: {
+    fontSize: "1rem",
+    fontWeight: 700,
+    color: "#00D4A1",
+    display: "flex",
+    alignItems: "baseline",
+    gap: "0.25rem",
+  },
   userProfile: {
     display: "flex",
     alignItems: "center",
@@ -97,6 +121,10 @@ export const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.95rem",
     fontWeight: 500,
     color: "#1a1a1a",
+    maxWidth: "120px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   link: {
     color: "#0052FF",
@@ -104,6 +132,14 @@ export const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     fontSize: "0.95rem",
     transition: "opacity 0.2s",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  linkIcon: {
+    width: "1rem",
+    height: "1rem",
+    flexShrink: 0,
   },
   errorBanner: {
     background: "#fee",
@@ -143,11 +179,55 @@ export const styles: Record<string, React.CSSProperties> = {
   section: {
     marginBottom: "2rem",
   },
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "1rem",
+    flexWrap: "wrap",
+    gap: "1rem",
+  },
   sectionTitle: {
     margin: 0,
     fontSize: "1.5rem",
     fontWeight: 600,
     color: "#1a1a1a",
+  },
+  tabs: {
+    display: "flex",
+    gap: "0.5rem",
+    marginBottom: "2rem",
+    borderBottom: "2px solid rgba(0, 0, 0, 0.08)",
+  },
+  tab: {
+    padding: "0.75rem 1.5rem",
+    fontSize: "1rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    background: "transparent",
+    border: "none",
+    borderBottom: "3px solid transparent",
+    color: "#666",
+    transition: "color 0.2s, border-color 0.2s",
+    marginBottom: "-2px",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  tabIcon: {
+    width: "1rem",
+    height: "1rem",
+    flexShrink: 0,
+  },
+  tabActive: {
+    color: "#0052FF",
+    borderBottomColor: "#0052FF",
+  },
+  tabContent: {
+    display: "block",
+  },
+  tabContentHidden: {
+    display: "none",
   },
   emptyCard: {
     background: "white",
@@ -647,6 +727,26 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   schemaDetails: {
     marginTop: "0.5rem",
+  },
+  pagination: {
+    display: "flex",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: "2rem",
+    paddingTop: "1.5rem",
+    borderTop: "1px solid rgba(0, 0, 0, 0.08)",
+    flexWrap: "wrap",
+    gap: "1rem",
+  },
+  paginationInfo: {
+    fontSize: "0.875rem",
+    color: "#666",
+    fontWeight: 500,
+  },
+  paginationControls: {
+    display: "flex",
+    gap: "0.75rem",
   },
 };
 

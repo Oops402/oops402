@@ -23,7 +23,7 @@ import {
 import { z } from "zod/v4";
 import { getPKPsForAuthMethod, mintPKP, getPkpSessionSigs, type PKP, PKPAccount } from "../../wallet/index.js";
 import { getBalances, transferToken } from "../../wallet/chainService.js";
-import { searchAgents, getAgent } from "../../agents/service.js";
+import { searchAgents, searchAgentsByReputation, getAgent } from "../../agents/service.js";
 import { makePayment } from "../../x402/service.js";
 import { queryCachedResources } from "../../x402/bazaarService.js";
 import { getSessionOwner, getSessionAccessToken } from "./redisTransport.js";
@@ -48,12 +48,35 @@ const EchoSchema = z.object({
 const WalletGetSchema = z.object({});
 
 const DiscoverAgentsSchema = z.object({
+  // Search mode
+  searchByReputation: z.boolean().optional().describe("Use reputation-based search instead of regular search"),
+  
+  // Regular search parameters
   name: z.string().optional().describe("Search by name (substring match)"),
-  mcpTools: z.array(z.string()).optional().describe("Filter by MCP tools"),
+  mcp: z.boolean().optional().describe("Filter agents with MCP endpoints"),
+  a2a: z.boolean().optional().describe("Filter agents with A2A endpoints"),
+  mcpTools: z.array(z.string()).optional().describe("Filter by MCP tools (array of tool names)"),
+  a2aSkills: z.array(z.string()).optional().describe("Filter by A2A skills (array of skill names)"),
+  mcpPrompts: z.array(z.string()).optional().describe("Filter by MCP prompts (array of prompt names)"),
+  mcpResources: z.array(z.string()).optional().describe("Filter by MCP resources (array of resource URIs)"),
+  supportedTrust: z.array(z.string()).optional().describe("Filter by supported trust mechanisms"),
+  x402support: z.boolean().optional().describe("Filter agents with x402 support (default: true)"),
+  active: z.boolean().optional().describe("Filter by active status"),
+  ens: z.string().optional().describe("Filter by ENS name"),
   chains: z.union([
     z.array(z.number()),
     z.literal("all"),
   ]).optional().describe("Chain IDs to search (array of numbers or 'all')"),
+  
+  // Reputation search parameters
+  tags: z.array(z.string()).optional().describe("Filter by tags (for reputation search)"),
+  minAverageScore: z.number().optional().describe("Minimum average score (0-100, for reputation search)"),
+  includeRevoked: z.boolean().optional().describe("Include revoked feedback (for reputation search, default: false)"),
+  
+  // Pagination
+  pageSize: z.number().optional().describe("Number of results per page (default: 50)"),
+  cursor: z.string().optional().describe("Pagination cursor for next page"),
+  sort: z.array(z.string()).optional().describe("Sort order (e.g., ['createdAt:desc'])"),
 });
 
 const AgentListToolsSchema = z.object({
@@ -395,7 +418,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
       },
       {
         name: ToolName.DISCOVER_AGENTS,
-        description: "Discover agents and services that support x402 payments",
+        description: "Discover agents and services that support x402 payments. Supports both regular search (by name, MCP/A2A endpoints, tools, skills, etc.) and reputation-based search (by tags, ratings, etc.). Use searchByReputation=true for reputation search.",
         inputSchema: toJsonSchema(DiscoverAgentsSchema),
       },
       {
@@ -514,6 +537,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                   publicKey: pkp.publicKey,
                   tokenId: pkp.tokenId,
                 },
+                managementUrl: `${config.baseUri}/wallet`,
               }, null, 2),
             },
           ],
@@ -535,43 +559,148 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.DISCOVER_AGENTS) {
       try {
         const validatedArgs = DiscoverAgentsSchema.parse(args);
-        const searchParams: any = {
-          x402support: true,
-        };
         
-        if (validatedArgs.name) {
-          searchParams.name = validatedArgs.name;
+        // If searching by reputation, use reputation search
+        if (validatedArgs.searchByReputation) {
+          const reputationParams: any = {};
+          
+          if (validatedArgs.tags) {
+            reputationParams.tags = validatedArgs.tags;
+          }
+          if (validatedArgs.minAverageScore !== undefined) {
+            reputationParams.minAverageScore = validatedArgs.minAverageScore;
+          }
+          if (validatedArgs.includeRevoked !== undefined) {
+            reputationParams.includeRevoked = validatedArgs.includeRevoked;
+          }
+          if (validatedArgs.a2aSkills) {
+            reputationParams.skills = validatedArgs.a2aSkills;
+          }
+          if (validatedArgs.name) {
+            reputationParams.names = [validatedArgs.name];
+          }
+          if (validatedArgs.chains) {
+            reputationParams.chains = validatedArgs.chains;
+          }
+          if (validatedArgs.pageSize) {
+            reputationParams.pageSize = validatedArgs.pageSize;
+          }
+          if (validatedArgs.cursor) {
+            reputationParams.cursor = validatedArgs.cursor;
+          }
+          if (validatedArgs.sort) {
+            reputationParams.sort = validatedArgs.sort;
+          }
+          
+          logger.debug("Discovering agents by reputation", reputationParams);
+          const result = await searchAgentsByReputation(reputationParams);
+          
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  agents: result.items.map(agent => ({
+                    agentId: agent.agentId,
+                    chainId: agent.chainId,
+                    name: agent.name,
+                    description: agent.description,
+                    image: agent.image,
+                    mcpTools: agent.mcpTools,
+                    a2aSkills: agent.a2aSkills,
+                    active: agent.active,
+                    owners: agent.owners,
+                    operators: agent.operators,
+                    walletAddress: agent.walletAddress,
+                    averageScore: (agent as any).extras?.averageScore,
+                  })),
+                  nextCursor: result.nextCursor,
+                  meta: result.meta,
+                  total: result.items.length,
+                }, null, 2),
+              },
+            ],
+          };
+        } else {
+          // Regular search
+          const searchParams: any = {
+            x402support: validatedArgs.x402support !== undefined ? validatedArgs.x402support : true,
+          };
+          
+          if (validatedArgs.name) {
+            searchParams.name = validatedArgs.name;
+          }
+          if (validatedArgs.mcp !== undefined) {
+            searchParams.mcp = validatedArgs.mcp;
+          }
+          if (validatedArgs.a2a !== undefined) {
+            searchParams.a2a = validatedArgs.a2a;
+          }
+          if (validatedArgs.mcpTools) {
+            searchParams.mcpTools = validatedArgs.mcpTools;
+          }
+          if (validatedArgs.a2aSkills) {
+            searchParams.a2aSkills = validatedArgs.a2aSkills;
+          }
+          if (validatedArgs.mcpPrompts) {
+            searchParams.mcpPrompts = validatedArgs.mcpPrompts;
+          }
+          if (validatedArgs.mcpResources) {
+            searchParams.mcpResources = validatedArgs.mcpResources;
+          }
+          if (validatedArgs.supportedTrust) {
+            searchParams.supportedTrust = validatedArgs.supportedTrust;
+          }
+          if (validatedArgs.active !== undefined) {
+            searchParams.active = validatedArgs.active;
+          }
+          if (validatedArgs.ens) {
+            searchParams.ens = validatedArgs.ens;
+          }
+          if (validatedArgs.chains) {
+            searchParams.chains = validatedArgs.chains;
+          }
+          if (validatedArgs.pageSize) {
+            searchParams.pageSize = validatedArgs.pageSize;
+          }
+          if (validatedArgs.cursor) {
+            searchParams.cursor = validatedArgs.cursor;
+          }
+          if (validatedArgs.sort) {
+            searchParams.sort = validatedArgs.sort;
+          }
+          
+          logger.debug("Discovering agents", searchParams);
+          const result = await searchAgents(searchParams);
+          
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  agents: result.items.map(agent => ({
+                    agentId: agent.agentId,
+                    chainId: agent.chainId,
+                    name: agent.name,
+                    description: agent.description,
+                    image: agent.image,
+                    mcpTools: agent.mcpTools,
+                    a2aSkills: agent.a2aSkills,
+                    active: agent.active,
+                    owners: agent.owners,
+                    operators: agent.operators,
+                    walletAddress: agent.walletAddress,
+                  })),
+                  nextCursor: result.nextCursor,
+                  meta: result.meta,
+                  total: result.items.length,
+                }, null, 2),
+              },
+            ],
+          };
         }
-        if (validatedArgs.mcpTools) {
-          searchParams.mcpTools = validatedArgs.mcpTools;
-        }
-        if (validatedArgs.chains) {
-          searchParams.chains = validatedArgs.chains;
-        }
-        
-        logger.debug("Discovering agents", searchParams);
-        const result = await searchAgents(searchParams);
-        
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                success: true,
-                agents: result.items.map(agent => ({
-                  agentId: agent.agentId,
-                  name: agent.name,
-                  description: agent.description,
-                  mcpTools: agent.mcpTools,
-                  a2aSkills: agent.a2aSkills,
-                  active: agent.active,
-                })),
-                nextCursor: result.nextCursor,
-                total: result.items.length,
-              }, null, 2),
-            },
-          ],
-        };
       } catch (error) {
         logger.error("Agent discovery failed", error as Error);
         return {

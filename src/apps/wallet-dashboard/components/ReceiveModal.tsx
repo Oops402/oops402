@@ -1,7 +1,6 @@
-import { useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { CloseIcon, CopyIcon, CheckIcon } from "./icons";
 import { generateQRCode } from "../utils/qrcode";
-import { truncateAddress } from "../utils/formatting";
 import { styles } from "../styles";
 
 interface ReceiveModalProps {
@@ -12,7 +11,14 @@ interface ReceiveModalProps {
 }
 
 export function ReceiveModal({ address, onClose, onCopy, copiedAddress }: ReceiveModalProps) {
-  const qrCodeDataUrl = useMemo(() => generateQRCode(address), [address]);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
+
+  useEffect(() => {
+    generateQRCode(address).then(setQrCodeDataUrl).catch((error) => {
+      console.error("Failed to generate QR code:", error);
+      setQrCodeDataUrl("");
+    });
+  }, [address]);
 
   return (
     <div style={styles.modal} onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -29,11 +35,17 @@ export function ReceiveModal({ address, onClose, onCopy, copiedAddress }: Receiv
         </div>
         <div style={styles.receiveContent}>
           <div style={styles.qrCodeContainer}>
-            <img
-              src={qrCodeDataUrl}
-              alt="QR Code"
-              style={styles.qrCode}
-            />
+            {qrCodeDataUrl ? (
+              <img
+                src={qrCodeDataUrl}
+                alt="QR Code"
+                style={styles.qrCode}
+              />
+            ) : (
+              <div style={{ ...styles.qrCode, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "#f5f5f5" }}>
+                Loading QR code...
+              </div>
+            )}
           </div>
           <div style={styles.receiveAddress}>
             <div style={styles.receiveLabel}>Wallet Address</div>
