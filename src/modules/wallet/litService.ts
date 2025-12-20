@@ -8,6 +8,7 @@ import { LitContracts } from "@lit-protocol/contracts-sdk";
 import { LitNetwork, AUTH_METHOD_SCOPE, AUTH_METHOD_TYPE, LIT_ABILITY } from "@lit-protocol/constants";
 import { LitNodeClient } from "@lit-protocol/lit-node-client";
 import { LitPKPResource } from "@lit-protocol/auth-helpers";
+import { datil, datilDev, datilTest } from "@lit-protocol/contracts";
 import IpfsHash from "ipfs-only-hash";
 import bs58 from "bs58";
 import { litActionCode } from "./litAction.js";
@@ -22,6 +23,16 @@ export interface PKP {
 
 export interface PKPSessionSigs {
   [key: string]: any;
+}
+
+interface CapacityToken {
+  tokenId: string;
+  URI: { description: string; image_data: string; name: string };
+  capacity: {
+    expiresAt: { formatted: string; timestamp: number };
+    requestsPerMillisecond: number;
+  };
+  isExpired: boolean;
 }
 
 // Use "datil" network directly (supported in v7)
@@ -53,6 +64,8 @@ function getLitContractsNetwork(network: string): string {
 
 let litNodeClient: LitNodeClient | null = null;
 let litContractsClient: LitContracts | null = null;
+// Cache for capacity credit token ID - initialized at startup
+let cachedCapacityTokenId: string | null = null;
 
 function getProvider(): ethers.providers.JsonRpcProvider {
   return new ethers.providers.JsonRpcProvider(LIT_RPC_URL);
@@ -115,6 +128,7 @@ async function getLitContractsClient(): Promise<LitContracts> {
 /**
  * Initialize Lit services at startup
  * This pre-initializes the singleton clients to avoid lazy initialization on first request
+ * Also pre-queries and caches the capacity credit token to avoid delays on user requests
  */
 export async function initializeLitServices(): Promise<void> {
   logger.info("Initializing Lit services", { network: LIT_NETWORK });
@@ -124,7 +138,54 @@ export async function initializeLitServices(): Promise<void> {
       getLitNodeClient(),
       getLitContractsClient(),
     ]);
-    logger.info("Lit services initialized successfully", { network: LIT_NETWORK });
+    
+    // Pre-query and cache capacity credit token at startup
+    // This avoids the ~20 second delay on first user request
+    logger.info("Pre-querying capacity credit token", { network: LIT_NETWORK });
+    try {
+      const signer = getSigner();
+      
+      // Check environment variable first
+      if (process.env.LIT_CAPACITY_CREDIT_TOKEN_ID) {
+        cachedCapacityTokenId = process.env.LIT_CAPACITY_CREDIT_TOKEN_ID;
+        logger.info("Using capacity credit from environment variable", { 
+          capacityTokenId: cachedCapacityTokenId 
+        });
+      } else {
+        // Query existing capacity credits to find a non-expired one
+        const capacityTokens = await queryCapacityCredits(signer);
+        const nonExpiredToken = capacityTokens.find((token) => !token.isExpired);
+        
+        if (nonExpiredToken) {
+          cachedCapacityTokenId = nonExpiredToken.tokenId;
+          logger.info("Cached existing non-expired capacity credit", { 
+            capacityTokenId: cachedCapacityTokenId 
+          });
+        } else {
+          // Mint a new one if none exist
+          const litContracts = await getLitContractsClient();
+          logger.info("No non-expired capacity credits found, minting new one");
+          const result = await litContracts.mintCapacityCreditsNFT({
+            requestsPerKilosecond: 10,
+            daysUntilUTCMidnightExpiration: 1,
+          });
+          cachedCapacityTokenId = result.capacityTokenIdStr;
+          logger.info("Minted and cached new capacity credit", { 
+            capacityTokenId: cachedCapacityTokenId 
+          });
+        }
+      }
+    } catch (error) {
+      logger.warning("Failed to pre-query capacity credit, will query on first request", { 
+        error: (error as Error).message 
+      });
+      // Don't fail startup if capacity credit query fails - we can query it later
+    }
+    
+    logger.info("Lit services initialized successfully", { 
+      network: LIT_NETWORK,
+      capacityTokenCached: !!cachedCapacityTokenId
+    });
   } catch (error) {
     logger.error("Failed to initialize Lit services", error as Error, { network: LIT_NETWORK });
     throw error;
@@ -188,20 +249,178 @@ async function getPkpInfoFromMintReceipt(
   };
 }
 
+/**
+ * Get RateLimitNFT contract instance for querying capacity credits
+ */
+function getRateLimitNFTContract(): ethers.Contract {
+  const signer = getSigner();
+  
+  // Get contract data from @lit-protocol/contracts package based on network
+  let contractsData: any;
+  const networkStr = LIT_NETWORK_ENV.toLowerCase();
+  
+  if (networkStr === "datil-dev") {
+    contractsData = datilDev.data as any;
+  } else if (networkStr === "datil-test") {
+    contractsData = datilTest.data as any;
+  } else {
+    // Default to datil
+    contractsData = datil.data as any;
+  }
+  
+  const contractData = contractsData.find(
+    (contract: any) => contract.name === "RateLimitNFT"
+  );
+  
+  if (!contractData) {
+    throw new Error(`RateLimitNFT contract not found for network ${networkStr}`);
+  }
+  
+  const contract = contractData.contracts[0];
+  return new ethers.Contract(
+    contract.address_hash,
+    contract.ABI,
+    signer
+  );
+}
+
+/**
+ * Normalize token URI from base64 encoded JSON
+ */
+function normalizeTokenURI(tokenURI: string): { description: string; image_data: string; name: string } {
+  const base64 = tokenURI[0];
+  const data = base64.split("data:application/json;base64,")[1];
+  const dataToString = Buffer.from(data, "base64").toString("binary");
+  return JSON.parse(dataToString);
+}
+
+/**
+ * Normalize capacity data from contract response
+ */
+function normalizeCapacity(capacity: any): { requestsPerMillisecond: number; expiresAt: { formatted: string; timestamp: number } } {
+  const [requestsPerMillisecond, expiresAt] = capacity[0];
+  const timestamp = parseInt(expiresAt.toString());
+  return {
+    requestsPerMillisecond: parseInt(requestsPerMillisecond.toString()),
+    expiresAt: {
+      timestamp,
+      formatted: new Date(timestamp * 1000).toISOString(),
+    },
+  };
+}
+
+/**
+ * Query a single capacity credit token
+ */
+async function queryCapacityCredit(
+  contract: ethers.Contract,
+  owner: string,
+  tokenIndexForUser: number
+): Promise<CapacityToken> {
+  const tokenId = (
+    await contract.functions.tokenOfOwnerByIndex(owner, tokenIndexForUser)
+  ).toString();
+
+  try {
+    const [URI, capacity, isExpired] = await Promise.all([
+      contract.functions.tokenURI(tokenId).then(normalizeTokenURI),
+      contract.functions.capacity(tokenId).then(normalizeCapacity),
+      contract.functions.isExpired(tokenId),
+    ]);
+
+    return {
+      tokenId,
+      URI,
+      capacity,
+      isExpired: isExpired[0],
+    };
+  } catch (e) {
+    throw new Error(
+      `Failed to fetch details for capacity token ${tokenId}: ${e}`
+    );
+  }
+}
+
+/**
+ * Query all capacity credits owned by the signer
+ */
+async function queryCapacityCredits(signer: ethers.Wallet): Promise<CapacityToken[]> {
+  const contract = getRateLimitNFTContract();
+  const balanceResult = await contract.functions.balanceOf(signer.address);
+  const count = parseInt(balanceResult[0].toString());
+
+  if (count === 0) {
+    return [];
+  }
+
+  return Promise.all(
+    [...new Array(count)].map((_, i) =>
+      queryCapacityCredit(contract, signer.address, i)
+    )
+  );
+}
+
 async function getCapacityCredit(): Promise<string> {
+  // Use cached value if available (set at startup)
+  if (cachedCapacityTokenId) {
+    // Verify the cached token is still valid (not expired)
+    try {
+      const contract = getRateLimitNFTContract();
+      const isExpired = await contract.functions.isExpired(cachedCapacityTokenId);
+      
+      if (!isExpired[0]) {
+        logger.debug("Using cached capacity credit", { capacityTokenId: cachedCapacityTokenId });
+        return cachedCapacityTokenId;
+      } else {
+        logger.debug("Cached capacity credit expired, will refresh", { 
+          expiredTokenId: cachedCapacityTokenId 
+        });
+        cachedCapacityTokenId = null; // Clear expired cache
+      }
+    } catch (error) {
+      logger.warning("Failed to verify cached capacity credit, will refresh", { error });
+      cachedCapacityTokenId = null; // Clear invalid cache
+    }
+  }
+
+  // Fallback: query or mint if cache is empty or expired
   const signer = getSigner();
   const litContracts = await getLitContractsClient();
 
+  // Check environment variable
   let capacityTokenId = process.env.LIT_CAPACITY_CREDIT_TOKEN_ID;
 
   if (!capacityTokenId) {
+    // Query existing capacity credits to find a non-expired one
+    logger.debug("Querying existing capacity credits");
+    try {
+      const capacityTokens = await queryCapacityCredits(signer);
+      const nonExpiredToken = capacityTokens.find((token) => !token.isExpired);
+      
+      if (nonExpiredToken) {
+        capacityTokenId = nonExpiredToken.tokenId;
+        cachedCapacityTokenId = capacityTokenId; // Update cache
+        logger.debug("Found existing non-expired capacity credit", { capacityTokenId });
+        return capacityTokenId;
+      }
+      
+      logger.debug("No non-expired capacity credits found, will mint new one");
+    } catch (error) {
+      logger.warning("Failed to query existing capacity credits, will mint new one", { error });
+    }
+
+    // Only mint if no non-expired token exists
     logger.debug("Minting Capacity Credits NFT");
     const result = await litContracts.mintCapacityCreditsNFT({
       requestsPerKilosecond: 10,
       daysUntilUTCMidnightExpiration: 1,
     });
     capacityTokenId = result.capacityTokenIdStr;
+    cachedCapacityTokenId = capacityTokenId; // Update cache
     logger.debug("Minted Capacity Credit", { capacityTokenId });
+  } else {
+    // Environment variable set - cache it
+    cachedCapacityTokenId = capacityTokenId;
   }
 
   return capacityTokenId;

@@ -402,15 +402,16 @@ async function main() {
       // Discover bazaar resources
       app.get('/api/discover/bazaar', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
         try {
-          const { type, resource, keyword, limit, offset } = req.query;
+          const { type, resource, keyword, limit, offset, sortBy } = req.query;
           
-          logger.debug('Discovering bazaar resources', { type, resource, keyword, limit, offset });
+          logger.debug('Discovering bazaar resources', { type, resource, keyword, limit, offset, sortBy });
           const result = await queryCachedResources({
             type: type as string | undefined,
             resource: resource as string | undefined,
             keyword: keyword as string | undefined,
             limit: limit ? Number(limit) : undefined,
             offset: offset ? Number(offset) : undefined,
+            sortBy: sortBy === 'price_asc' || sortBy === 'price_desc' ? sortBy as 'price_asc' | 'price_desc' : undefined,
           });
           
           res.json({

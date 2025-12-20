@@ -131,11 +131,16 @@ export async function redisRelayToMcpServer(sessionId: string, transport: Transp
     redisCleanup = await redisClient.createSubscription(toClientChannel, async (redisMessageJson) => {
       const redisMessage = JSON.parse(redisMessageJson) as RedisMessage;
       if (redisMessage.type === 'mcp') {
-        logger.debug('Relaying message from Redis to client', {
-          sessionId,
-          requestId,
-          method: ('method' in redisMessage.message ? redisMessage.message.method : undefined)
-        });
+        // Skip DEBUG logging for frequent notification messages to reduce log noise
+        const method = ('method' in redisMessage.message ? redisMessage.message.method : undefined);
+        const isNotification = typeof method === 'string' && method.startsWith('notifications/');
+        if (!isNotification) {
+          logger.debug('Relaying message from Redis to client', {
+            sessionId,
+            requestId,
+            method
+          });
+        }
         await transport.send(redisMessage.message, redisMessage.options);
       }
     }, (error) => {
@@ -301,13 +306,18 @@ export class ServerRedisTransport implements Transport {
     const relatedRequestId = options?.relatedRequestId?.toString() ?? ("id" in message ? message.id?.toString() : notificationStreamId);
     const channel = getToClientChannel(this._sessionId, relatedRequestId)
 
-    logger.debug('Sending message to client', {
-      sessionId: this._sessionId,
-      channel,
-      method: ('method' in message ? message.method : undefined),
-      id: ('id' in message ? message.id : undefined),
-      relatedRequestId
-    });
+    // Skip DEBUG logging for frequent notification messages to reduce log noise
+    const method = ('method' in message ? message.method : undefined);
+    const isNotification = typeof method === 'string' && method.startsWith('notifications/');
+    if (!isNotification) {
+      logger.debug('Sending message to client', {
+        sessionId: this._sessionId,
+        channel,
+        method,
+        id: ('id' in message ? message.id : undefined),
+        relatedRequestId
+      });
+    }
 
     const redisMessage: RedisMessage = { type: 'mcp', message, options };
     const messageStr = JSON.stringify(redisMessage);

@@ -33,6 +33,57 @@ import { config } from "../../../config.js";
 
 type ToolInput = Tool["inputSchema"];
 
+// USDC uses 6 decimals on Base network
+const USDC_DECIMALS = 6;
+
+/**
+ * Format raw token amount (in smallest unit) to human-readable format
+ * @param rawAmount - Amount as string in smallest unit (e.g., "1000000" for 1 USDC)
+ * @param decimals - Number of decimals (default: 6 for USDC)
+ * @returns Human-readable amount string (e.g., "1.0" for 1 USDC)
+ */
+function formatTokenAmount(rawAmount: string, decimals: number = USDC_DECIMALS): string {
+  try {
+    // Handle bigint strings
+    const amount = BigInt(rawAmount);
+    const divisor = BigInt(10 ** decimals);
+    const whole = amount / divisor;
+    const remainder = amount % divisor;
+    
+    // Format with proper decimals
+    if (remainder === 0n) {
+      return whole.toString();
+    }
+    
+    const remainderStr = remainder.toString().padStart(decimals, '0');
+    // Remove trailing zeros
+    const trimmed = remainderStr.replace(/0+$/, '');
+    return `${whole}.${trimmed}`;
+  } catch (error) {
+    // If parsing fails, return original
+    logger.debug("Failed to format token amount", { rawAmount, error });
+    return rawAmount;
+  }
+}
+
+/**
+ * Format amount with locale-specific formatting for display
+ * @param amount - Amount as string in smallest unit
+ * @param decimals - Number of decimals (default: 6 for USDC)
+ * @returns Formatted amount string (e.g., "1.0" or "1,234.56")
+ */
+function formatAmountDisplay(amount: string, decimals: number = USDC_DECIMALS): string {
+  const formatted = formatTokenAmount(amount, decimals);
+  const num = parseFloat(formatted);
+  if (isNaN(num)) return formatted;
+  
+  // Format with appropriate decimal places (0-6 for USDC)
+  return num.toLocaleString("en-US", { 
+    minimumFractionDigits: 0, 
+    maximumFractionDigits: decimals 
+  });
+}
+
 // Helper to convert Zod schema to JSON schema using Zod v4's native support
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const toJsonSchema = (schema: z.ZodType<any>): ToolInput => {
@@ -111,6 +162,7 @@ const DiscoverBazaarResourcesSchema = z.object({
   keyword: z.string().optional().describe("Search keyword - matches resource URL or description"),
   limit: z.number().optional().describe("Maximum number of results to return (default: 50)"),
   offset: z.number().optional().describe("Offset for pagination (default: 0)"),
+  sortBy: z.enum(['price_asc', 'price_desc']).optional().describe("Sort by price: 'price_asc' for low to high, 'price_desc' for high to low"),
 });
 
 enum ToolName {
@@ -443,7 +495,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
       },
       {
         name: ToolName.DISCOVER_BAZAAR_RESOURCES,
-        description: "Discover x402-protected resources from the Facilitator's Bazaar",
+        description: "Discover x402-protected resources from the Facilitator's Bazaar. Returns pay-per-use services and APIs that require payment to access. Each resource includes payment options with prices in both raw format (for calculations) and human-readable USDC format (for display). Supports filtering by type, resource URL, keyword, and sorting by price (low to high or high to low). Use the 'resource' URL with 'make_x402_payment' tool to access services.",
         inputSchema: toJsonSchema(DiscoverBazaarResourcesSchema),
       },
     ];
@@ -1038,6 +1090,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
           keyword: validatedArgs.keyword,
           limit: validatedArgs.limit,
           offset: validatedArgs.offset,
+          sortBy: validatedArgs.sortBy,
         });
         
         return {
@@ -1046,6 +1099,16 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
               type: "text",
               text: JSON.stringify({
                 success: true,
+                _meta: {
+                  description: "x402 Bazaar Resources - Discover pay-per-use services",
+                  fieldNotes: {
+                    resource: "URL endpoint to use with 'make_x402_payment' tool",
+                    maxAmountRequired: "Raw amount in smallest token unit (string) - use for calculations",
+                    maxAmountRequiredFormatted: "Human-readable USDC amount (e.g., '1.0' = 1 USDC) - use for displaying costs to users",
+                    network: "Blockchain network - ensure it matches your wallet's network",
+                    scheme: "'erc20' = token payment, 'native' = blockchain currency"
+                  }
+                },
                 resources: result.items.map(resource => ({
                   resource: resource.resource,
                   type: resource.type,
@@ -1055,6 +1118,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                     network: accept.network,
                     scheme: accept.scheme,
                     maxAmountRequired: accept.maxAmountRequired,
+                    maxAmountRequiredFormatted: formatAmountDisplay(accept.maxAmountRequired),
                     description: accept.description,
                   })),
                   x402Version: resource.x402Version,

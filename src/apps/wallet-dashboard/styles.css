@@ -3,9 +3,63 @@
   to { transform: rotate(360deg); }
 }
 
+/* Base body and html styling */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: var(--bg-primary);
+  transition: background 0.3s ease;
+}
+
+#root {
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+/* Light mode CSS variables */
+:root {
+  --bg-primary: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f7fa;
+  --bg-hover: #f0f0f0;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666;
+  --text-tertiary: #333;
+  --border-color: rgba(0, 0, 0, 0.08);
+  --border-light: #e0e0e0;
+  --shadow: rgba(0, 0, 0, 0.08);
+  --shadow-hover: rgba(0, 0, 0, 0.12);
+  --error-bg: #fee;
+  --error-border: #fcc;
+  --error-text: #c00;
+  --modal-overlay: rgba(0, 0, 0, 0.6);
+}
+
+/* Dark mode CSS variables */
+html.dark-mode,
+html.dark-mode :root {
+  --bg-primary: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  --bg-secondary: #1e1e2e;
+  --bg-tertiary: #252538;
+  --bg-hover: #2d2d44;
+  --text-primary: #e0e0e0;
+  --text-secondary: #b0b0b0;
+  --text-tertiary: #d0d0d0;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --border-light: rgba(255, 255, 255, 0.15);
+  --shadow: rgba(0, 0, 0, 0.3);
+  --shadow-hover: rgba(0, 0, 0, 0.4);
+  --error-bg: #3d1f1f;
+  --error-border: #5d2f2f;
+  --error-text: #ff6b6b;
+  --modal-overlay: rgba(0, 0, 0, 0.8);
+}
+
 .wallet-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12) !important;
+  box-shadow: 0 8px 20px var(--shadow-hover) !important;
 }
 
 .action-button:hover {
@@ -18,8 +72,8 @@
 }
 
 .icon-button:hover {
-  background: #f0f0f0 !important;
-  color: #333 !important;
+  background: var(--bg-hover) !important;
+  color: var(--text-tertiary) !important;
 }
 
 .button:hover {
@@ -27,7 +81,7 @@
 }
 
 .button-secondary:hover {
-  background: #e0e0e0 !important;
+  background: var(--bg-hover) !important;
 }
 
 .input:focus {
@@ -48,8 +102,89 @@ table.discovery-table td {
 }
 
 table.discovery-table th {
-  background: #f5f7fa;
+  background: var(--bg-tertiary);
   font-weight: 600;
+}
+
+/* Dark mode specific overrides for elements that need explicit styling */
+html.dark-mode .wallet-card,
+html.dark-mode .emptyCard,
+html.dark-mode .directCallerCard,
+html.dark-mode .discoveryCard,
+html.dark-mode .mobilePaymentCard {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-light) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .balanceSection,
+html.dark-mode .headerBalance,
+html.dark-mode .userProfile,
+html.dark-mode .addressDisplay,
+html.dark-mode .receiveAddressRow,
+html.dark-mode .paymentInfo,
+html.dark-mode .resultContainer,
+html.dark-mode .schemaContainer,
+html.dark-mode .acceptItem {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .errorBanner {
+  background: var(--error-bg) !important;
+  border-color: var(--error-border) !important;
+  color: var(--error-text) !important;
+}
+
+html.dark-mode .modal {
+  background: var(--modal-overlay) !important;
+}
+
+html.dark-mode .modalContent {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .input,
+html.dark-mode input {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border-light) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .input:focus {
+  border-color: #0052FF !important;
+  box-shadow: 0 0 0 3px rgba(0, 82, 255, 0.2) !important;
+}
+
+html.dark-mode .discovery-table th {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .discovery-table td,
+html.dark-mode .discovery-table th {
+  border-color: var(--border-light) !important;
+}
+
+html.dark-mode .discovery-table tr {
+  border-color: var(--border-light) !important;
+  background: var(--bg-secondary) !important;
+}
+
+html.dark-mode .badge {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+html.dark-mode .hintText,
+html.dark-mode .balanceHint {
+  color: var(--text-secondary) !important;
+}
+
+html.dark-mode .schemaPreview {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
 }
 
 @media (max-width: 768px) {
@@ -106,6 +241,33 @@ table.discovery-table th {
 }
 
 @media (max-width: 640px) {
+  /* Tabs mobile optimizations */
+  .tabs {
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+    gap: 0.5rem;
+    margin-bottom: 2rem;
+    border-bottom: 2px solid var(--border-color);
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .tabs::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+  }
+  
+  .tab {
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 0.75rem 1rem !important;
+    font-size: 0.9rem !important;
+    min-width: fit-content;
+  }
+  
   /* Header mobile optimizations */
   .header-actions {
     flex-direction: row;

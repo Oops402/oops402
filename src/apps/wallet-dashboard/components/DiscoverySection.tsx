@@ -16,6 +16,7 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const [copiedAssets, setCopiedAssets] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"price_asc" | "price_desc" | undefined>(undefined);
   const [pagination, setPagination] = useState<{
     limit: number;
     offset: number;
@@ -27,9 +28,11 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
   });
 
   useEffect(() => {
-    loadDiscoveryItems(pagination.offset);
+    // Reset to first page and reload when sort changes
+    setPagination(prev => ({ ...prev, offset: 0 }));
+    loadDiscoveryItems(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sortBy]);
 
   const loadDiscoveryItems = async (offset?: number) => {
     setLoading(true);
@@ -38,6 +41,9 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
       const params = new URLSearchParams();
       if (searchQuery) {
         params.append('keyword', searchQuery);
+      }
+      if (sortBy) {
+        params.append('sortBy', sortBy);
       }
       const currentOffset = offset !== undefined ? offset : pagination.offset;
       params.append('offset', currentOffset.toString());
@@ -68,6 +74,11 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
 
   const handleSearch = () => {
     loadDiscoveryItems(0);
+  };
+
+  const handleSortChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value;
+    setSortBy(value === "price_asc" || value === "price_desc" ? value : undefined);
   };
 
   const handlePrevious = () => {
@@ -115,26 +126,42 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
       </div>
       <div style={styles.discoveryContent}>
         <div style={styles.searchContainer} className="search-container">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search resources..."
-            style={styles.input}
-            className="input"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                handleSearch();
-              }
-            }}
-          />
-          <button
-            onClick={handleSearch}
-            style={styles.button}
-            className="button"
-          >
-            Search
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search resources..."
+              style={{ ...styles.input, flex: "1", minWidth: "200px" }}
+              className="input"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSearch();
+                }
+              }}
+            />
+            <select
+              value={sortBy || ""}
+              onChange={handleSortChange}
+              style={{
+                ...styles.input,
+                minWidth: "180px",
+                cursor: "pointer",
+              }}
+              className="input"
+            >
+              <option value="">Sort by...</option>
+              <option value="price_asc">Price: Low to High</option>
+              <option value="price_desc">Price: High to Low</option>
+            </select>
+            <button
+              onClick={handleSearch}
+              style={styles.button}
+              className="button"
+            >
+              Search
+            </button>
+          </div>
         </div>
         {loading && <div style={styles.loadingText}>Loading...</div>}
         {error && <div style={styles.errorText}>{error}</div>}

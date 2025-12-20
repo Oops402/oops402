@@ -99,6 +99,8 @@ export interface QueryCachedResourcesParams {
   limit?: number;
   /** Offset for pagination */
   offset?: number;
+  /** Sort order - 'price_asc' for low to high, 'price_desc' for high to low */
+  sortBy?: 'price_asc' | 'price_desc';
 }
 
 /**
@@ -384,6 +386,31 @@ export async function queryCachedResources(
             accept.description?.toLowerCase().includes(keywordLower)
         );
         return matchesResource || matchesDescription;
+      });
+    }
+
+    // Apply sorting
+    if (params.sortBy === 'price_asc' || params.sortBy === 'price_desc') {
+      filtered = filtered.sort((a, b) => {
+        // Get minimum price from all accepts for each resource
+        const getMinPrice = (resource: DiscoveryResource): number => {
+          if (resource.accepts.length === 0) return Infinity;
+          return Math.min(
+            ...resource.accepts.map((accept) => {
+              const amount = parseFloat(accept.maxAmountRequired);
+              return isNaN(amount) ? Infinity : amount;
+            })
+          );
+        };
+
+        const priceA = getMinPrice(a);
+        const priceB = getMinPrice(b);
+
+        if (params.sortBy === 'price_asc') {
+          return priceA - priceB;
+        } else {
+          return priceB - priceA;
+        }
       });
     }
 

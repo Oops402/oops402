@@ -42,6 +42,12 @@ function WalletDashboard() {
   const [activeTab, setActiveTab] = useState<"wallet" | "discovery" | "agents">("wallet");
   const [directCallerModalOpen, setDirectCallerModalOpen] = useState(false);
   const [mcpConnectionModalOpen, setMcpConnectionModalOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    // Check localStorage or system preference
+    const saved = localStorage.getItem("darkMode");
+    if (saved !== null) return saved === "true";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
 
   // Fetch wallet and profile on mount
   useEffect(() => {
@@ -53,6 +59,16 @@ function WalletDashboard() {
   useEffect(() => {
     setAvatarError(false);
   }, [userProfile?.picture]);
+
+  // Apply dark mode class to document
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add("dark-mode");
+    } else {
+      document.documentElement.classList.remove("dark-mode");
+    }
+    localStorage.setItem("darkMode", darkMode.toString());
+  }, [darkMode]);
 
   // Fetch balance when wallet changes
   useEffect(() => {
@@ -257,24 +273,42 @@ function WalletDashboard() {
               padding: 0,
             }}
             className="link"
-            title="Connect to ChatGPT or Claude"
+            title="Add Oops!402 to ChatGPT or Claude"
+          >
+            <svg style={styles.linkIcon} className="link-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zm-4 10H8v-1h8v1zm0-3H8v-1h8v1zm2-3h-2v-2h-2v2h-4v-2H8v2H6v-2.88c.94-.37 1.62-1.27 1.62-2.32V9.2c0-1.1.9-2 2-2h4.76c1.1 0 2 .9 2 2v1.6c0 1.05.68 1.95 1.62 2.32V13zm-6.5-5.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm5 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>
+            </svg>
+            <span>Add MCP to your Agent</span>
+          </button>
+          <button
+            onClick={() => setDarkMode(!darkMode)}
+            style={{
+              ...styles.link,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+            className="link"
+            title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
           >
             <svg style={styles.linkIcon} className="link-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
+              {darkMode ? (
+                <path fillRule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clipRule="evenodd" />
+              ) : (
+                <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+              )}
             </svg>
-            <span>Connect MCP</span>
           </button>
           <a href="/" style={styles.link} className="link">
             <svg style={styles.linkIcon} className="link-icon" viewBox="0 0 20 20" fill="currentColor">
               <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
             </svg>
-            <span>Home</span>
           </a>
           <a href="/logout" style={styles.link} className="link">
             <svg style={styles.linkIcon} className="link-icon" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clipRule="evenodd" />
             </svg>
-            <span>Logout</span>
           </a>
         </div>
       </header>
@@ -286,14 +320,14 @@ function WalletDashboard() {
         </div>
       )}
 
-      <div style={styles.tabs}>
+      <div style={styles.tabs} className="tabs">
         <button
           style={{
             ...styles.tab,
             ...(activeTab === "wallet" ? styles.tabActive : {}),
           }}
           onClick={() => setActiveTab("wallet")}
-          className={activeTab === "wallet" ? "tab-active" : ""}
+          className={`tab ${activeTab === "wallet" ? "tab-active" : ""}`}
         >
           <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
             <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
@@ -307,7 +341,7 @@ function WalletDashboard() {
             ...(activeTab === "discovery" ? styles.tabActive : {}),
           }}
           onClick={() => setActiveTab("discovery")}
-          className={activeTab === "discovery" ? "tab-active" : ""}
+          className={`tab ${activeTab === "discovery" ? "tab-active" : ""}`}
         >
           <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
@@ -320,7 +354,7 @@ function WalletDashboard() {
             ...(activeTab === "agents" ? styles.tabActive : {}),
           }}
           onClick={() => setActiveTab("agents")}
-          className={activeTab === "agents" ? "tab-active" : ""}
+          className={`tab ${activeTab === "agents" ? "tab-active" : ""}`}
         >
           <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
