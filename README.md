@@ -1,15 +1,30 @@
-# MCP Feature Reference Server
+# Oops!402 MCP Server
 
-This repository provides a complete MCP server implementation that 
-* demonstrates all MCP protocol features (tools, resources, prompts, sampling)
-* implements OAuth 2.0 authentication using the recommended [separate auth server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#roles) architectural pattern
-* serves as a learning resource and starting template for building your own MCP servers
+Oops!402 is an MCP (Model Context Protocol) server that unlocks commerce for AI agents. It provides tools for AI agents to discover services, make payments, and interact with the x402 payment protocol ecosystem.
+
+## What is Oops!402?
+
+Oops!402 gives AI agents the ability to:
+- **Manage wallets**: Create and manage self-custodial x402-compatible wallets for AI agents using [Lit Protocol](https://litprotocol.com) Programmable Key Pairs (PKPs)
+- **Discover services**: Find x402-protected resources from the Facilitator's Bazaar
+- **Discover agents**: Search for other AI agents that support x402 payments
+- **Make payments**: Execute x402 payments to protected resources and services
+- **Transfer tokens**: Send ERC20 tokens (like USDC) on EVM chains
+
+### Architecture Highlights
+
+- **OAuth Authentication**: Uses [Auth0](https://auth0.com) as the OAuth 2.0 provider for secure authentication
+- **Self-Custodial Wallets**: Leverages [Lit Protocol](https://litprotocol.com) Lit Actions to create and manage Programmable Key Pairs (PKPs) that are bound to OAuth identities. Lit Actions verify Auth0 JWT tokens to ensure only authenticated users can access their wallets.
+- **Agent Discovery**: Uses [ERC8004 (Agent0)](https://github.com/agent0-protocol/agent0) for discovering AI agents on-chain. Agents register their capabilities, MCP tools, A2A skills, and x402 payment support on Agent0 smart contracts.
+- **Resource Discovery**: Automatically crawls and caches x402-protected resources from the [Coinbase x402 Facilitator Bazaar](https://api.cdp.coinbase.com/platform/v2/x402) discovery API, enabling agents to discover paid services and capabilities without hardcoded endpoints.
+- **MCP Protocol**: Implements the [Model Context Protocol](https://modelcontextprotocol.io) for seamless integration with AI applications like ChatGPT and Claude
 
 The [Model Context Protocol](https://modelcontextprotocol.io) enables seamless integration between AI applications and external data sources, tools, and services.
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Connecting to ChatGPT and Claude](#connecting-to-chatgpt-and-claude)
 - [MCP Features](#mcp-features)
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
@@ -17,17 +32,72 @@ The [Model Context Protocol](https://modelcontextprotocol.io) enables seamless i
 - [Contributing](#contributing)
 - [License](#license)
 
+## Connecting to ChatGPT and Claude
+
+### Connecting to ChatGPT
+
+1. **Enable Developer Mode in ChatGPT**
+   - Open your ChatGPT interface and navigate to **Settings**
+   - Select the **Connectors** tab
+   - Click on **Advanced settings**
+   - Toggle on **Developer Mode**. This unlocks the options for creating custom connectors.
+
+2. **Create a Custom Connector**
+   - In the Connectors settings, click on **Create**
+   - Provide the information for your MCP server:
+     - **Name**: Oops!402 (or any descriptive name)
+     - **Description** (Optional): Unlock commerce for AI agents with x402 wallet, discovery, and payment tools
+     - **Icon** (Optional): Provide an icon for easy identification
+     - **MCP server URL**: `https://oops402.com/mcp`
+   - Make sure **Authentication** is set to **"OAuth"**
+   - Confirm that you trust this application by clicking the checkbox
+   - Click **Create**
+
+3. **Connect and Use**
+   - After creating the connector, click **Connect** to go through the OAuth authentication flow
+   - Once connected, you can enable specific tools from the "Search and tools" menu
+   - Start using Oops!402 tools in your conversations!
+
+### Connecting to Claude
+
+1. **Navigate to Connectors Settings**
+   - Go to **Settings > Connectors** (for Pro and Max plans)
+   - Or **Admin settings > Connectors** (for Team and Enterprise plans)
+
+2. **Add Custom Connector**
+   - Locate the **"Connectors"** section
+   - Click **"Add custom connector"** at the bottom of the section
+   - Add your connector's remote MCP server URL: `https://oops402.com/mcp`
+   - Optionally, click **"Advanced settings"** to specify an OAuth Client ID and OAuth Client Secret for your server
+   - Finish configuring your connector by clicking **"Add"**
+
+3. **Enable and Use**
+   - Enable connectors via the **"Search and tools"** button on the lower left of your chat interface
+   - For connectors that require authentication, click **"Connect"** to go through the authentication flow
+   - After connecting, use the same menu to enable or disable specific tools made available by the server
+   - Start using Oops!402 tools in your conversations!
+
 ## Quick Start
 
-To start exploring ASAP:
+### Using with ChatGPT or Claude
+
+The easiest way to use Oops!402 is to connect it as a custom connector in ChatGPT or Claude:
+
+**MCP Server URL:** `https://oops402.com/mcp`
+
+See the [Connecting to ChatGPT and Claude](#connecting-to-chatgpt-and-claude) section below for detailed instructions.
+
+### Local Development
+
+To run the server locally:
 
 ```bash
 # Clone and install
-git clone https://github.com/modelcontextprotocol/example-remote-server.git
-cd example-remote-server
+git clone <repository-url>
+cd oops402
 npm install
 
-# Start the server with in-process auth and in-memory session management
+# Start the server with in-process demo auth and in-memory session management
 npm run dev:internal
 
 # In another terminal, run MCP Inspector
@@ -38,21 +108,37 @@ npx -y @modelcontextprotocol/inspector
 ```
 
 The server is now running a lightweight config with everything bundled in a single process:
-- authentication is handled by an in-process module, rather than a separate server
+- authentication is handled by an in-process demo OAuth server (for development only)
 - sessions are stored in memory, rather than in Redis
+
+**Note:** 
+- In production, Oops!402 uses **Auth0** for OAuth authentication and **Lit Protocol** for self-custodial wallet creation
+- The internal auth mode is only for local development and testing
+- For production-like testing, configure `AUTH_MODE=external` and `AUTH_PROVIDER=auth0` with your Auth0 credentials
 
 Other configurations are available: see [Development Setup](#development-setup), below.
 
 ## MCP Features
 
-This server implements the complete MCP specification:
+This server provides the following MCP tools for AI agents:
 
-- **[Tools](https://modelcontextprotocol.io/docs/concepts/tools)**: 7 example tools including echo, add, long-running operations, and LLM sampling
-- **[Resources](https://modelcontextprotocol.io/docs/concepts/resources)**: 100+ example resources with pagination and subscription support
+### Wallet Tools
+- **`get_x402_wallet`**: Get or create a self-custodial x402 wallet for the authenticated agent/user. Wallets are created using Lit Protocol Programmable Key Pairs (PKPs), which are cryptographically bound to the user's Auth0 OAuth identity via Lit Actions.
+- **`get_x402_wallet_balance`**: Get ETH and token balances for an x402 wallet
+- **`transfer_x402_token`**: Transfer ERC20 tokens (defaults to USDC on Base network)
+
+### Discovery Tools
+- **`discover_x402_agents`**: Discover agents and services that support x402 payments using [ERC8004 (Agent0)](https://github.com/agent0-protocol/agent0). Supports both regular search (by name, MCP/A2A endpoints, tools, skills) and reputation-based search (by tags, ratings). Agents are discovered from on-chain Agent0 registries.
+- **`list_x402_agent_tools`**: List capabilities/tools available from a specific agent registered on Agent0
+- **`search_x402_bazaar_resources`**: Discover x402-protected resources from the [Coinbase x402 Facilitator Bazaar](https://api.cdp.coinbase.com/platform/v2/x402). Resources are automatically crawled and cached from the Coinbase discovery API, enabling agents to find paid services and capabilities.
+
+### Payment Tools
+- **`make_x402_payment`**: Make x402 payment to a protected resource/service
+
+### Additional MCP Features
+- **[Resources](https://modelcontextprotocol.io/docs/concepts/resources)**: Example resources with pagination and subscription support
 - **[Prompts](https://modelcontextprotocol.io/docs/concepts/prompts)**: Simple and complex prompts with argument support
-- **[Sampling](https://modelcontextprotocol.io/docs/concepts/sampling)**: LLM interaction capabilities
-- **[Elicitation](https://modelcontextprotocol.io/docs/concepts/elicitation)**: User input elicitation with various field types
-- **Transports**: Both Streamable HTTP (recommended) and SSE (legacy)
+- **Transports**: Streamable HTTP (recommended) and SSE (legacy)
 
 ## Development Setup
 
@@ -68,10 +154,10 @@ The codebase supports a number of configurations ranging from simple/exploratory
 
 #### Configuration Options Overview
 
-| | Development/Exploration | Productionesque |
+| | Development/Exploration | Production |
 |--------|----------------------|------------|
 | **Auto-restart** | `npm run dev:*` <br> • Auto-restarts on file changes <br> • Verbose logging <br> • Source maps enabled | `npm run start:*` <br> • Requires build step first <br> • Optimized performance <br> • No auto-restart |
-| **Auth Mode** | `internal` <br> • OAuth in same process <br> • Single port (3232) <br> • Easier to debug | `external` <br> • Separate auth server <br> • Multiple ports (3001 + 3232) <br> • Can point to commercial auth provider instead |
+| **Auth Mode** | `internal` <br> • Demo OAuth in same process <br> • Single port (3232) <br> • Easier to debug <br> • **Not for production** | `external` with `AUTH_PROVIDER=auth0` <br> • Uses Auth0 as OAuth provider <br> • Production-ready authentication <br> • JWT token validation <br> • Lit Actions verify Auth0 tokens |
 | **Session Storage** | In-memory <br> • No dependencies <br> • Sessions lost on restart <br> • Single instance only | Redis <br> • Requires Docker/Redis <br> • Sessions persist <br> • Multi-instance ready |
 
 Server configuration is determined by environment variables. To set up a non-default configuration, copy [`.env.example`](.env.example) to `.env` and edit as desired, or pass non-defaults on the command line.
@@ -104,23 +190,58 @@ npm run dev:internal 2>&1 | grep -i redis
 
 ## Authentication Config
 
-This repo implements the [separate auth server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#roles) architecture pattern described in the MCP specification, in which the MCP server is the "resource server", and authorization functionality is hosted separately. (The architecture in which resource and authorization server functions are tightly integrated within the MCP server is **deprecated**, and is not demonstrated in this codebase.)
+This repo implements the [separate auth server](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#roles) architecture pattern described in the MCP specification, in which the MCP server is the "resource server", and authorization functionality is hosted separately.
 
-For convenience and simplicity during exploration, the server supports an **internal auth mode**, in which OAuth 2.0 endpoints are hosted in the same *process* as the MCP server. However, it remains architecturally separate from the MCP server itself: there is no entanglement of MCP and authorization functionality in the codebase. To run the server in this mode, use `npm run dev:internal`.
+### Production Configuration (Auth0)
 
-**External auth mode** is the standard configuration in which the MCP server and authentication servers run as separate processes. A demonstration authorization server is provided in this repo, and you can also point to commercial providers like Auth0 or Okta by updating the relevant config options. To run the MCP server in external mode, use `npm run dev:external`: this command will also start the separate demo auth server.
+In production, Oops!402 uses [Auth0](https://auth0.com) as the OAuth 2.0 provider. Auth0 handles:
+- User authentication via OAuth 2.0 with PKCE
+- JWT token issuance and validation
+- User identity management
 
-**Note:** choice of mode and OAuth server does **not** affect the MCP server's interaction with clients during authorization. It simply determines the authorization server endpoints returned in [Protected Resource Metadata](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#authorization-server-location).
+The MCP server validates Auth0 JWT tokens and uses them to:
+- Authenticate MCP client requests
+- Create and manage Lit Protocol PKP wallets bound to Auth0 user identities
+- Verify wallet ownership via Lit Actions that validate Auth0 tokens
+
+### Wallet Creation with Lit Protocol
+
+Oops!402 uses [Lit Protocol](https://litprotocol.com) to create self-custodial wallets:
+
+1. **Programmable Key Pairs (PKPs)**: Each user gets a unique PKP that serves as their wallet address
+2. **Lit Actions**: Custom Lit Actions verify Auth0 JWT tokens to ensure only authenticated users can access their PKPs
+3. **OAuth Binding**: PKPs are cryptographically bound to Auth0 user identities (`oauth:${auth0_user_id}`)
+4. **Session Signatures**: Lit Actions generate session signatures that allow the PKP to sign transactions without exposing private keys
+
+This architecture ensures that:
+- Users maintain full custody of their wallets (keys are managed by Lit Protocol)
+- Wallet access is tied to Auth0 authentication
+- No private keys are ever exposed to the application server
+
+### Development Configuration
+
+For local development, the server supports an **internal auth mode** where a demo OAuth server runs in-process. This is useful for testing but should not be used in production.
 
 **Authentication Environment Variables:**
 
 - `AUTH_MODE` - Sets the authentication mode:
-  - `internal` (default) - Auth endpoints run in-process with the MCP server
-  - `external` - Auth endpoints run on a separate server
+  - `internal` (default for local dev) - Demo OAuth endpoints run in-process with the MCP server
+  - `external` - Use external OAuth provider (Auth0 in production)
+  - `auth_server` - Run only the OAuth server (for testing)
 
-- `AUTH_SERVER_URL` - URL of the external auth server (required when `AUTH_MODE=external`, ignored when `AUTH_MODE=internal`)
+- `AUTH_PROVIDER` - OAuth provider type (when `AUTH_MODE=external`):
+  - `auth0` - Use Auth0 as OAuth provider (production)
+  - `okta` - Use Okta as OAuth provider
+  - `generic` - Use generic OAuth provider
+
+- `AUTH0_DOMAIN` - Auth0 domain (required when `AUTH_PROVIDER=auth0`):
+  - Example: `oops402pay.us.auth0.com`
+
+- `AUTH0_AUDIENCE` - Auth0 API audience/identifier (optional):
+  - Example: `urn:oops402`
+
+- `AUTH_SERVER_URL` - URL of the external auth server (required when `AUTH_MODE=external` and `AUTH_PROVIDER=generic`)
   - Example for local demo: `http://localhost:3001`
-  - Example for Auth0: `https://your-tenant.auth0.com`
   - Example for Okta: `https://your-domain.okta.com`
 
 ## Session Management Config
@@ -166,7 +287,43 @@ For multi-instance testing and persistent sessions, the server also supports Red
       - `development` (default) - Server continues with warning if Redis fails
       - `production` - Server exits if Redis connection fails
 
-    Note: Docker container config can be found in `.devcontainer/docker-compose.yml`. 
+    Note: Docker container config can be found in `.devcontainer/docker-compose.yml`.
+
+## Bazaar Crawl Configuration
+
+Oops!402 automatically crawls and caches x402-protected resources from the [Coinbase x402 Facilitator Bazaar](https://api.cdp.coinbase.com/platform/v2/x402) discovery API. This enables agents to discover paid services and capabilities without hardcoded endpoints.
+
+**Bazaar Configuration Environment Variables:**
+
+- `X402_FACILITATOR_URL` - URL of the Coinbase x402 Facilitator API (optional)
+  - Default: `https://api.cdp.coinbase.com/platform/v2/x402`
+  - Example: `https://api.cdp.coinbase.com/platform/v2/x402`
+
+- `X402_BAZAAR_CACHE_FILE` - Path to the cache file for crawled resources (optional)
+  - Default: `bazaar-resources.json`
+  - Example: `./data/bazaar-resources.json`
+
+- `X402_BAZAAR_CRAWL_INTERVAL_MS` - Interval between bazaar crawls in milliseconds (optional)
+  - Default: `3600000` (1 hour)
+  - Example: `1800000` (30 minutes)
+
+The bazaar crawl runs automatically as a background cron job, fetching all available x402-protected resources and caching them locally for fast discovery queries. Resources are paginated and fetched with rate limiting and retry logic to handle API constraints gracefully.
+
+## Agent0 (ERC8004) Configuration
+
+Agent discovery uses [ERC8004 (Agent0)](https://github.com/agent0-protocol/agent0) to query on-chain agent registries. Agents register their capabilities, MCP tools, A2A skills, and x402 payment support on Agent0 smart contracts.
+
+**Agent0 Configuration Environment Variables:**
+
+- `AGENT0_CHAIN_ID` - Chain ID where Agent0 contracts are deployed (optional)
+  - Default: `84532` (Base Sepolia testnet)
+  - Example: `8453` (Base mainnet)
+
+- `AGENT0_RPC_URL` - RPC URL for the blockchain network (optional)
+  - Default: `https://sepolia.infura.io/v3/YOUR_PROJECT_ID`
+  - Example: `https://mainnet.base.org` (Base mainnet public RPC)
+
+The Agent0 SDK queries on-chain registries to discover agents that support x402 payments, MCP endpoints, A2A skills, and other capabilities. Both regular search and reputation-based search are supported. 
 
 ### Testing Features With MCP Inspector
 
@@ -207,13 +364,23 @@ npm run test:e2e  # End-to-end tests
 │   ├── interfaces/
 │   │   └── auth-validator.ts # Clean auth/MCP boundary
 │   ├── modules/
-│   │   ├── auth/             # Demo OAuth 2.0 implementation
+│   │   ├── auth/             # OAuth 2.0 implementation (demo for dev, Auth0 for prod)
 │   │   │   ├── auth/         # Core auth logic and providers
-│   │   │   ├── handlers/     # Mock upstream IdP handler
+│   │   │   ├── handlers/     # Mock upstream IdP handler (dev only)
 │   │   │   ├── services/     # Auth and Redis-backed session services
 │   │   │   ├── static/       # OAuth frontend assets
+│   │   │   ├── webAuth.ts    # Auth0 web authentication middleware
 │   │   │   ├── index.ts      # Auth module router
 │   │   │   └── types.ts      # Auth type definitions
+│   │   ├── wallet/           # Wallet management with Lit Protocol
+│   │   │   ├── litAction.ts  # Lit Action code for Auth0 JWT verification
+│   │   │   ├── litService.ts # Lit Protocol service integration
+│   │   │   └── ...           # Wallet creation and management
+│   │   ├── agents/           # Agent discovery using ERC8004 (Agent0)
+│   │   │   └── service.ts    # Agent0 SDK integration for on-chain agent discovery
+│   │   ├── x402/             # x402 payment protocol integration
+│   │   │   ├── bazaarService.ts # Coinbase x402 Bazaar crawling and caching
+│   │   │   └── service.ts    # x402 payment execution
 │   │   ├── mcp/              # MCP protocol implementation
 │   │   │   ├── handlers/     # Streamable HTTP and SSE handlers
 │   │   │   ├── services/     # MCP core and Redis transport
@@ -246,6 +413,10 @@ Additional documentation can be found in the `docs/` directory:
 - [Model Context Protocol Documentation](https://modelcontextprotocol.io)
 - [MCP Specification](https://modelcontextprotocol.io/specification)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
+- [Lit Protocol Documentation](https://developer.litprotocol.com) - Programmable Key Pairs and Lit Actions
+- [Auth0 Documentation](https://auth0.com/docs) - OAuth 2.0 authentication
+- [ERC8004 (Agent0) Protocol](https://github.com/agent0-protocol/agent0) - On-chain agent registry and discovery
+- [Coinbase x402 Facilitator](https://api.cdp.coinbase.com/platform/v2/x402) - x402 payment protocol and resource discovery
 
 ## Contributing
 

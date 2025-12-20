@@ -69,6 +69,7 @@
     "@types/content-type": "^1.1.8",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/express-session": "^1.18.2",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.5",

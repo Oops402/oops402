@@ -6,15 +6,24 @@
  * to ensure users have consistent identity across both interfaces.
  */
 
-import { auth, Request as OpenIDRequest } from 'express-openid-connect';
+import { auth } from 'express-openid-connect';
 import { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
 import { config } from '../../config.js';
 import { logger } from '../shared/logger.js';
 
+// Type augmentation for express-openid-connect
 declare module 'express-serve-static-core' {
   interface Request {
-    oidc?: OpenIDRequest['oidc'];
+    oidc?: {
+      isAuthenticated(): boolean;
+      user?: {
+        sub?: string;
+        [key: string]: unknown;
+      };
+      accessToken?: string | (() => Promise<string>) | { access_token?: string; token?: string; accessToken?: string; [key: string]: unknown };
+      [key: string]: unknown;
+    };
   }
 }
 
@@ -35,8 +44,8 @@ export function createWebAuthMiddleware() {
   }
 
   const webConfig: WebAuthConfig = {
-    clientId: config.auth.web.clientId,
-    secret: config.auth.web.secret,
+    clientId: config.auth.web.clientId!,
+    secret: config.auth.web.secret!,
     issuerBaseURL: config.auth.web.issuerBaseURL!,
     baseURL: config.auth.web.baseURL || config.baseUri,
     redisEnabled: config.redis.enabled
