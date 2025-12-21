@@ -92,3 +92,36 @@ export interface AgentSearchResponse {
   };
 }
 
+export interface PaymentHistoryItem {
+  id: string;
+  transactionHash: string;
+  sender: string;
+  recipient: string;
+  amount: string;
+  amountFormatted: string;
+  blockTimestamp: string;
+  chain: string;
+  provider: string;
+  facilitatorId: string;
+  tokenAddress: string;
+  decimals: number;
+  bazaarResource?: {
+    resource: string;
+    type: string;
+    description?: string;
+    payTo?: string;
+  } | null;
+}
+
+export interface PaymentHistoryResponse {
+  success: boolean;
+  walletAddress: string;
+  payments: PaymentHistoryItem[];
+  pagination: {
+    page: number;
+    totalPages: number;
+    total: number;
+    hasNextPage: boolean;
+  };
+}
+

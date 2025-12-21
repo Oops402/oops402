@@ -13,6 +13,7 @@ import { DiscoverySection } from "./components/DiscoverySection";
 import { AgentSearchSection } from "./components/AgentSearchSection";
 import { DirectX402Caller } from "./components/DirectX402Caller";
 import { McpConnectionModal } from "./components/McpConnectionModal";
+import { PaymentHistory } from "./components/PaymentHistory";
 import { styles } from "./styles";
 import "./styles.css";
 
@@ -361,11 +362,12 @@ function WalletDashboard() {
           </svg>
           <span>Agents</span>
         </button>
+
       </div>
 
       <div style={activeTab === "wallet" ? styles.tabContent : styles.tabContentHidden}>
         <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Your Wallet</h2>
+          <h2 style={styles.sectionTitle}>Your x402 Wallet</h2>
 
           {wallet ? (
             <WalletCard
@@ -390,6 +392,11 @@ function WalletDashboard() {
               <p style={styles.emptyText}>Your wallet is being created or loaded.</p>
             </div>
           )}
+
+          {/* spacer for visual separation */}
+          <div style={{ height: 20 }} />
+
+          {wallet && <PaymentHistory walletAddress={wallet.address} />}
         </div>
       </div>
 

@@ -78,14 +78,8 @@ export async function getSessionOwner(sessionId: string): Promise<string | null>
   return await redisClient.get(`session:${sessionId}:owner`);
 }
 
-export async function setSessionAccessToken(sessionId: string, accessToken: string): Promise<void> {
-  logger.debug('Setting session access token', { sessionId });
-  await redisClient.set(`session:${sessionId}:token`, accessToken, { EX: 3600 }); // 1 hour expiry
-}
-
-export async function getSessionAccessToken(sessionId: string): Promise<string | null> {
-  return await redisClient.get(`session:${sessionId}:token`);
-}
+// Token storage functions removed - tokens are now passed through Redis messages
+// to avoid storing user private data in Redis/memory
 
 export async function validateSessionOwnership(sessionId: string, userId: string): Promise<boolean> {
   const owner = await getSessionOwner(sessionId);
@@ -104,10 +98,11 @@ export async function isSessionOwnedBy(sessionId: string, userId: string): Promi
 }
 
 
-export async function redisRelayToMcpServer(sessionId: string, transport: Transport, isGetRequest: boolean = false): Promise<() => Promise<void>> {
+export async function redisRelayToMcpServer(sessionId: string, transport: Transport, isGetRequest: boolean = false, authInfo?: AuthInfo): Promise<() => Promise<void>> {
   logger.debug('Setting up Redis relay to MCP server', {
     sessionId,
-    isGetRequest
+    isGetRequest,
+    hasAuthInfo: !!authInfo
   });
   
   let redisCleanup: (() => Promise<void>) | undefined = undefined;
@@ -166,8 +161,13 @@ export async function redisRelayToMcpServer(sessionId: string, transport: Transp
           });
           await subscribe(message.id.toString());
         }
-        // Now send the message to the MCP server
-        await sendToMcpServer(sessionId, message, extra);
+        // Merge authInfo from request with any extra from transport
+        // Request authInfo takes precedence
+        const mergedExtra = authInfo 
+          ? { ...extra, authInfo }
+          : extra;
+        // Now send the message to the MCP server with authInfo
+        await sendToMcpServer(sessionId, message, mergedExtra);
         resolve(message);
       }
     });
@@ -349,10 +349,11 @@ export class ServerRedisTransport implements Transport {
   }
 }
 
-export async function getShttpTransport(sessionId: string, onsessionclosed: (sessionId: string) => void | Promise<void>, isGetRequest: boolean = false): Promise<StreamableHTTPServerTransport> {
+export async function getShttpTransport(sessionId: string, onsessionclosed: (sessionId: string) => void | Promise<void>, isGetRequest: boolean = false, authInfo?: AuthInfo): Promise<StreamableHTTPServerTransport> {
   logger.debug('Getting StreamableHTTPServerTransport for existing session', {
     sessionId,
-    isGetRequest
+    isGetRequest,
+    hasAuthInfo: !!authInfo
   });
   
   // Giving undefined here and setting the sessionId means the 
@@ -363,8 +364,8 @@ export async function getShttpTransport(sessionId: string, onsessionclosed: (ses
   })
   shttpTransport.sessionId = sessionId;
 
-  // Use the new request-id based relay approach
-  const cleanup = await redisRelayToMcpServer(sessionId, shttpTransport, isGetRequest);
+  // Use the new request-id based relay approach, passing authInfo through
+  const cleanup = await redisRelayToMcpServer(sessionId, shttpTransport, isGetRequest, authInfo);
   shttpTransport.onclose = cleanup; 
   return shttpTransport;
 }

@@ -20,13 +20,14 @@ import {
   Tool,
   UnsubscribeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod/v4";
 import { getPKPsForAuthMethod, mintPKP, getPkpSessionSigs, type PKP, PKPAccount } from "../../wallet/index.js";
 import { getBalances, transferToken } from "../../wallet/chainService.js";
 import { searchAgents, searchAgentsByReputation, getAgent } from "../../agents/service.js";
 import { makePayment } from "../../x402/service.js";
-import { queryCachedResources } from "../../x402/bazaarService.js";
-import { getSessionOwner, getSessionAccessToken } from "./redisTransport.js";
+import { queryCachedResources, findResourcesByPayTo } from "../../x402/bazaarService.js";
+import { getSessionOwner } from "./redisTransport.js";
 import { readMcpInstallation } from "../../auth/services/auth.js";
 import { logger } from "../../shared/logger.js";
 import { config } from "../../../config.js";
@@ -165,6 +166,13 @@ const DiscoverBazaarResourcesSchema = z.object({
   sortBy: z.enum(['price_asc', 'price_desc']).optional().describe("Sort by price: 'price_asc' for low to high, 'price_desc' for high to low"),
 });
 
+const PaymentHistorySchema = z.object({
+  walletAddress: z.string().optional().describe("x402 Wallet address to get payment history for (defaults to first wallet)"),
+  pageSize: z.number().optional().describe("Number of results per page (default: 10)"),
+  page: z.number().optional().describe("Page number (default: 0)"),
+  timeframe: z.number().optional().describe("Timeframe in days (default: 30)"),
+});
+
 enum ToolName {
   ECHO = "echo",
   WALLET_GET = "get_x402_wallet",
@@ -174,6 +182,7 @@ enum ToolName {
   AGENT_LIST_TOOLS = "list_x402_agent_tools",
   PAY = "make_x402_payment",
   DISCOVER_BAZAAR_RESOURCES = "search_x402_bazaar_resources",
+  PAYMENT_HISTORY = "get_x402_payment_history",
 }
 
 enum PromptName {
@@ -498,6 +507,11 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         description: "Discover x402-protected resources from the Facilitator's Bazaar. Returns pay-per-use services and APIs that require payment to access. Each resource includes payment options with prices in both raw format (for calculations) and human-readable USDC format (for display). Supports filtering by type, resource URL, keyword, and sorting by price (low to high or high to low). Use the 'resource' URL with 'make_x402_payment' tool to access services.",
         inputSchema: toJsonSchema(DiscoverBazaarResourcesSchema),
       },
+      {
+        name: ToolName.PAYMENT_HISTORY,
+        description: "Get recent payment history for an x402 wallet address using x402scan. Returns a list of payments made by the wallet, including transaction hashes, amounts, recipients, timestamps, and other payment details.",
+        inputSchema: toJsonSchema(PaymentHistorySchema),
+      },
     ];
 
     return { tools };
@@ -505,6 +519,9 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
+    
+    // Extract authInfo from extra (passed through Redis messages)
+    const authInfo = extra?.authInfo;
 
     if (name === ToolName.ECHO) {
       const validatedArgs = EchoSchema.parse(args);
@@ -513,8 +530,9 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
       };
     }
 
-    // Helper function to get user context from session
-    const getUserContext = async () => {
+    // Helper function to get user context from authInfo (passed through Redis messages)
+    // No need to store tokens - they come with each request
+    const getUserContext = async (authInfo?: AuthInfo) => {
       if (!sessionId) {
         throw new Error("Session ID required for wallet operations");
       }
@@ -522,11 +540,14 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
       if (!userId) {
         throw new Error("User ID not found for session");
       }
-      const accessToken = await getSessionAccessToken(sessionId);
+      
+      // Get access token from authInfo (passed through Redis message)
+      const accessToken = authInfo?.token;
       if (!accessToken) {
-        logger.error("Access token not found in session", undefined, { sessionId, userId });
-        throw new Error("Access token not found for session. Please re-authenticate.");
+        logger.error("Access token not found in request", undefined, { sessionId, userId });
+        throw new Error("Access token not found in request. Please re-authenticate.");
       }
+      
       logger.debug("Reading MCP installation", { sessionId, userId, accessTokenLength: accessToken.length });
       const installation = await readMcpInstallation(accessToken);
       
@@ -551,7 +572,6 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
           sessionId, 
           userId, 
           accessTokenLength: accessToken.length,
-          accessTokenPrefix: accessToken.substring(0, 20) + "...",
           authMode: config.auth.mode
         });
         throw new Error(`Installation not found for access token. Token may be invalid or expired. Please re-authenticate.`);
@@ -563,7 +583,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.WALLET_GET) {
       try {
         WalletGetSchema.parse(args);
-        const { userId, oauthAccessToken } = await getUserContext();
+        const { userId, oauthAccessToken } = await getUserContext(authInfo);
         
         logger.debug("Getting or creating wallet", { userId });
         let pkps = await getPKPsForAuthMethod(userId);
@@ -805,7 +825,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.PAY) {
       try {
         const validatedArgs = PaySchema.parse(args);
-        const { userId, oauthAccessToken } = await getUserContext();
+        const { userId, oauthAccessToken } = await getUserContext(authInfo);
         
         // Get user's PKPs
         const pkps = await getPKPsForAuthMethod(userId);
@@ -904,7 +924,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.WALLET_BALANCE) {
       try {
         const validatedArgs = WalletBalanceSchema.parse(args);
-        const { userId, oauthAccessToken } = await getUserContext();
+        const { userId, oauthAccessToken } = await getUserContext(authInfo);
         
         // Get user's PKPs
         const pkps = await getPKPsForAuthMethod(userId);
@@ -984,7 +1004,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.WALLET_TRANSFER) {
       try {
         const validatedArgs = WalletTransferTokenSchema.parse(args);
-        const { userId, oauthAccessToken } = await getUserContext();
+        const { userId, oauthAccessToken } = await getUserContext(authInfo);
         
         // Get user's PKPs
         const pkps = await getPKPsForAuthMethod(userId);
@@ -1140,6 +1160,156 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             {
               type: "text",
               text: `Error discovering bazaar resources: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.PAYMENT_HISTORY) {
+      try {
+        const validatedArgs = PaymentHistorySchema.parse(args);
+        const { userId, oauthAccessToken } = await getUserContext(authInfo);
+        
+        // Get user's PKPs
+        const pkps = await getPKPsForAuthMethod(userId);
+        if (pkps.length === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "No wallets found. Please create a wallet first using get_x402_wallet.",
+              },
+            ],
+          };
+        }
+        
+        // Find the PKP to use (by address if specified, otherwise first one)
+        let pkp: PKP;
+        if (validatedArgs.walletAddress) {
+          pkp = pkps.find(p => p.ethAddress.toLowerCase() === validatedArgs.walletAddress!.toLowerCase())!;
+          if (!pkp) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Wallet address ${validatedArgs.walletAddress} not found.`,
+                },
+              ],
+            };
+          }
+        } else {
+          pkp = pkps[0];
+        }
+        
+        // Build x402scan API request
+        const pageSize = validatedArgs.pageSize || 10;
+        const page = validatedArgs.page || 0;
+        const timeframe = validatedArgs.timeframe || 30;
+        
+        const input = {
+          json: {
+            pagination: {
+              page_size: pageSize,
+              page: page,
+            },
+            senders: {
+              include: [pkp.ethAddress.toLowerCase()],
+            },
+            timeframe: timeframe,
+            sorting: {
+              id: "block_timestamp",
+              desc: true,
+            },
+          },
+        };
+        
+        logger.debug("Fetching payment history", { 
+          walletAddress: pkp.ethAddress,
+          pageSize,
+          page,
+          timeframe,
+        });
+        
+        const apiUrl = `https://www.x402scan.com/api/trpc/public.transfers.list?input=${encodeURIComponent(JSON.stringify(input))}`;
+        const response = await fetch(apiUrl);
+        
+        if (!response.ok) {
+          throw new Error(`x402scan API error: ${response.statusText}`);
+        }
+        
+        const data = await response.json() as any;
+        const items = data?.result?.data?.json?.items || [];
+        const pagination = {
+          page: data?.result?.data?.json?.page || page,
+          pageSize: data?.result?.data?.json?.total_count ? Math.ceil(data.result.data.json.total_count / pageSize) : 0,
+          total: data?.result?.data?.json?.total_count || 0,
+          hasNextPage: data?.result?.data?.json?.hasNextPage || false,
+        };
+        
+        // Match payments with bazaar resources
+        const paymentsWithResources = await Promise.all(
+          items.map(async (item: any) => {
+            const matchedResources = await findResourcesByPayTo(item.recipient);
+            
+            // Find the specific accept that matches this payment
+            let matchedResource = null;
+            let matchedAccept = null;
+            
+            if (matchedResources.length > 0) {
+              // Use the first matching resource (most common case)
+              matchedResource = matchedResources[0];
+              matchedAccept = matchedResource.accepts.find(
+                (accept) => accept.payTo?.toLowerCase() === item.recipient.toLowerCase()
+              );
+            }
+            
+            return {
+              id: item.id,
+              transactionHash: item.tx_hash,
+              sender: item.sender,
+              recipient: item.recipient,
+              amount: item.amount,
+              amountFormatted: formatAmountDisplay(item.amount.toString(), item.decimals || 6),
+              blockTimestamp: item.block_timestamp,
+              chain: item.chain,
+              provider: item.provider,
+              facilitatorId: item.facilitator_id,
+              tokenAddress: item.token_address,
+              decimals: item.decimals,
+              bazaarResource: matchedResource ? {
+                resource: matchedResource.resource,
+                type: matchedResource.type,
+                description: matchedAccept?.description || matchedResource.accepts[0]?.description,
+                payTo: matchedAccept?.payTo || matchedResource.accepts[0]?.payTo,
+              } : null,
+            };
+          })
+        );
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                walletAddress: pkp.ethAddress,
+                payments: paymentsWithResources,
+                pagination,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Payment history fetch failed", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error fetching payment history: ${(error as Error).message}`,
             },
           ],
         };

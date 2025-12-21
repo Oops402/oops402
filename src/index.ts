@@ -22,7 +22,7 @@ import { MCPModule } from './modules/mcp/index.js';
 import { Auth0TokenValidator, ExternalTokenValidator, InternalTokenValidator, ITokenValidator } from './interfaces/auth-validator.js';
 import { redisClient } from './modules/shared/redis.js';
 import { logger } from './modules/shared/logger.js';
-import { crawlAllResources, queryCachedResources } from './modules/x402/bazaarService.js';
+import { crawlAllResources, queryCachedResources, findResourcesByPayTo } from './modules/x402/bazaarService.js';
 import { createWebAuthMiddleware, getUserId, getAccessToken } from './modules/auth/webAuth.js';
 import { getPKPsForAuthMethod, mintPKP, getPkpSessionSigs, PKPAccount, initializeLitServices } from './modules/wallet/index.js';
 import { getBalances, transferToken } from './modules/wallet/chainService.js';
@@ -811,6 +811,161 @@ async function main() {
         } catch (error) {
           logger.error('Failed to transfer tokens', error as Error);
           res.status(500).json({ error: 'Failed to transfer tokens', message: (error as Error).message });
+        }
+      });
+
+      // Get payment history
+      app.get('/api/wallet/payment-history', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          const accessToken = await getAccessToken(req);
+          const walletAddress = req.query.walletAddress as string | undefined;
+          const pageSize = req.query.pageSize ? Number(req.query.pageSize) : 10;
+          const page = req.query.page ? Number(req.query.page) : 0;
+          const timeframe = req.query.timeframe ? Number(req.query.timeframe) : 30;
+
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          if (!accessToken) {
+            return res.status(401).json({ error: 'Access token not found' });
+          }
+
+          // Get user's PKPs
+          let pkps = await getPKPsForAuthMethod(userId);
+          if (pkps.length === 0) {
+            return res.status(400).json({ error: 'No wallets found. Please create a wallet first.' });
+          }
+          
+          // Find the PKP to use (by address if specified, otherwise first one)
+          let pkp;
+          if (walletAddress) {
+            pkp = pkps.find(p => p.ethAddress.toLowerCase() === walletAddress.toLowerCase());
+            if (!pkp) {
+              return res.status(404).json({ error: `Wallet address ${walletAddress} not found.` });
+            }
+          } else {
+            pkp = pkps[0];
+          }
+
+          // Build x402scan API request
+          const input = {
+            json: {
+              pagination: {
+                page_size: pageSize,
+                page: page,
+              },
+              senders: {
+                include: [pkp.ethAddress.toLowerCase()],
+              },
+              timeframe: timeframe,
+              sorting: {
+                id: "block_timestamp",
+                desc: true,
+              },
+            },
+          };
+
+          logger.debug('Fetching payment history', { 
+            walletAddress: pkp.ethAddress,
+            pageSize,
+            page,
+            timeframe,
+          });
+
+          const apiUrl = `https://www.x402scan.com/api/trpc/public.transfers.list?input=${encodeURIComponent(JSON.stringify(input))}`;
+          const response = await fetch(apiUrl);
+
+          if (!response.ok) {
+            throw new Error(`x402scan API error: ${response.statusText}`);
+          }
+
+          const data = await response.json() as any;
+          const items = data?.result?.data?.json?.items || [];
+          const pagination = {
+            page: data?.result?.data?.json?.page || page,
+            totalPages: data?.result?.data?.json?.total_pages || 0,
+            total: data?.result?.data?.json?.total_count || 0,
+            hasNextPage: data?.result?.data?.json?.hasNextPage || false,
+          };
+
+          // Format amounts using the same helper function
+          const formatAmountDisplay = (amount: string, decimals: number = 6): string => {
+            try {
+              const amountBigInt = BigInt(amount);
+              const divisor = BigInt(10 ** decimals);
+              const whole = amountBigInt / divisor;
+              const remainder = amountBigInt % divisor;
+              
+              if (remainder === 0n) {
+                return whole.toString();
+              }
+              
+              const remainderStr = remainder.toString().padStart(decimals, '0');
+              const trimmed = remainderStr.replace(/0+$/, '');
+              const formatted = `${whole}.${trimmed}`;
+              const num = parseFloat(formatted);
+              if (isNaN(num)) return formatted;
+              
+              return num.toLocaleString("en-US", { 
+                minimumFractionDigits: 0, 
+                maximumFractionDigits: decimals 
+              });
+            } catch (error) {
+              return amount;
+            }
+          };
+
+          // Match payments with bazaar resources
+          const paymentsWithResources = await Promise.all(
+            items.map(async (item: any) => {
+              const matchedResources = await findResourcesByPayTo(item.recipient);
+              
+              // Find the specific accept that matches this payment
+              let matchedResource = null;
+              let matchedAccept = null;
+              
+              if (matchedResources.length > 0) {
+                // Use the first matching resource (most common case)
+                matchedResource = matchedResources[0];
+                matchedAccept = matchedResource.accepts.find(
+                  (accept) => accept.payTo?.toLowerCase() === item.recipient.toLowerCase()
+                );
+              }
+              
+              return {
+                id: item.id,
+                transactionHash: item.tx_hash,
+                sender: item.sender,
+                recipient: item.recipient,
+                amount: item.amount,
+                amountFormatted: formatAmountDisplay(item.amount.toString(), item.decimals || 6),
+                blockTimestamp: item.block_timestamp,
+                chain: item.chain,
+                provider: item.provider,
+                facilitatorId: item.facilitator_id,
+                tokenAddress: item.token_address,
+                decimals: item.decimals,
+                bazaarResource: matchedResource ? {
+                  resource: matchedResource.resource,
+                  type: matchedResource.type,
+                  description: matchedAccept?.description || matchedResource.accepts[0]?.description,
+                  payTo: matchedAccept?.payTo || matchedResource.accepts[0]?.payTo,
+                } : null,
+              };
+            })
+          );
+
+          res.json({
+            success: true,
+            walletAddress: pkp.ethAddress,
+            payments: paymentsWithResources,
+            pagination,
+          });
+        } catch (error) {
+          logger.error('Failed to fetch payment history', error as Error);
+          res.status(500).json({ error: 'Failed to fetch payment history', message: (error as Error).message });
         }
       });
 

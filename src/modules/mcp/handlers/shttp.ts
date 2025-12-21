@@ -1,7 +1,7 @@
 import { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Request, Response } from "express";
-import { getShttpTransport, isSessionOwnedBy, redisRelayToMcpServer, ServerRedisTransport, setSessionOwner, setSessionAccessToken, shutdownSession } from "../services/redisTransport.js";
+import { getShttpTransport, isSessionOwnedBy, redisRelayToMcpServer, ServerRedisTransport, setSessionOwner, shutdownSession } from "../services/redisTransport.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "crypto";
 import { createMcpServer } from "../services/mcp.js";
@@ -102,14 +102,8 @@ export async function handleStreamableHTTP(req: Request, res: Response) {
         userId,
         isGetRequest
       });
-      // Ensure access token is stored (in case it wasn't stored during initialization)
-      if (req.auth?.token) {
-        await setSessionAccessToken(sessionId, req.auth.token);
-        logger.debug('Stored access token for existing session', { sessionId });
-      } else {
-        logger.warning('No access token in request for existing session', { sessionId });
-      }
-      shttpTransport = await getShttpTransport(sessionId, onsessionclosed, isGetRequest);
+      // Get existing transport and pass authInfo through (no need to store tokens)
+      shttpTransport = await getShttpTransport(sessionId, onsessionclosed, isGetRequest, req.auth);
     } else if (isInitializeRequest(req.body)) {
       // New initialization request - use JSON response mode
       logger.debug('Processing initialize request', {
@@ -131,11 +125,8 @@ export async function handleStreamableHTTP(req: Request, res: Response) {
         serverRedisTransport.onclose = mcpCleanup;
         await server.connect(serverRedisTransport)
       
-        // Set session ownership and store access token
+        // Set session ownership (no need to store access token - it's passed through messages)
         await setSessionOwner(sessionId, userId);
-        if (req.auth?.token) {
-          await setSessionAccessToken(sessionId, req.auth.token);
-        }
         
         logger.info('Session initialized successfully', {
           sessionId,
@@ -149,7 +140,8 @@ export async function handleStreamableHTTP(req: Request, res: Response) {
         onsessionclosed,
         onsessioninitialized,
       });
-      shttpTransport.onclose = await redisRelayToMcpServer(newSessionId, shttpTransport);
+      // Pass req.auth through to Redis messages so we don't need to store tokens
+      shttpTransport.onclose = await redisRelayToMcpServer(newSessionId, shttpTransport, false, req.auth);
     } else {
       // Invalid request - no session ID and not initialization request
       logger.warning('Invalid request: no session ID and not initialization', {

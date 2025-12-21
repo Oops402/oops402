@@ -256,7 +256,8 @@ export class Auth0TokenValidator extends BaseTokenValidator {
   }
 
   async introspect(token: string): Promise<TokenIntrospectionResponse> {
-    const tokenPrefix = token.substring(0, 20) + '...';
+    // Only log first 4 chars of token for debugging (not sensitive)
+    const tokenPrefix = token.substring(0, 4) + '...';
     
     // Check cache first
     const cached = this.cache.get(token);

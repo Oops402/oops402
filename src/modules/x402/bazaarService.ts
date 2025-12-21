@@ -350,6 +350,30 @@ export async function loadCachedResources(): Promise<DiscoveryResource[]> {
 }
 
 /**
+ * Find bazaar resources that match a given payTo address
+ * Returns resources where any accept has a matching payTo address
+ */
+export async function findResourcesByPayTo(
+  payToAddress: string
+): Promise<DiscoveryResource[]> {
+  try {
+    const allResources = await loadCachedResources();
+    const payToLower = payToAddress.toLowerCase();
+    
+    return allResources.filter((resource) =>
+      resource.accepts.some(
+        (accept) => accept.payTo?.toLowerCase() === payToLower
+      )
+    );
+  } catch (error) {
+    logger.error('Failed to find resources by payTo', error as Error, {
+      payToAddress,
+    });
+    return [];
+  }
+}
+
+/**
  * Query cached resources with filtering and pagination
  */
 export async function queryCachedResources(
