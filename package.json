@@ -5,9 +5,10 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "concurrently -n \"server,apps\" -c \"blue,green\" \"tsx watch --inspect src/index.ts\" \"npm run watch:apps\"",
-    "dev:internal": "concurrently -n \"server,apps\" -c \"blue,green\" \"AUTH_MODE=internal tsx watch --inspect src/index.ts\" \"npm run watch:apps\"",
-    "dev:external": "concurrently -n \"auth-server,mcp-server,apps\" -c \"yellow,blue,green\" \"AUTH_MODE=auth_server PORT=3001 BASE_URI=http://localhost:3001 tsx watch src/index.ts\" \"sleep 3 && AUTH_MODE=external AUTH_SERVER_URL=http://localhost:3001 tsx watch --inspect src/index.ts\" \"npm run watch:apps\"",
+    "dev": "npm run build && concurrently -n \"tsc,server,apps\" -c \"yellow,blue,green\" \"tsc --watch --preserveWatchOutput\" \"npm run dev:server\" \"npm run watch:apps\"",
+    "dev:server": "tsx watch --inspect dist/index.js",
+    "dev:internal": "npm run build && concurrently -n \"tsc,server,apps\" -c \"yellow,blue,green\" \"tsc --watch --preserveWatchOutput\" \"AUTH_MODE=internal npm run dev:server\" \"npm run watch:apps\"",
+    "dev:external": "npm run build && concurrently -n \"tsc,auth-server,mcp-server,apps\" -c \"yellow,blue,green,cyan\" \"tsc --watch --preserveWatchOutput\" \"AUTH_MODE=auth_server PORT=3001 BASE_URI=http://localhost:3001 tsx watch dist/index.js\" \"sleep 3 && AUTH_MODE=external AUTH_SERVER_URL=http://localhost:3001 tsx watch --inspect dist/index.js\" \"npm run watch:apps\"",
     "build": "tsc && npm run copy-static && npm run build:apps",
     "build:apps": "INPUT=src/apps/wallet-dashboard/index.html vite build",
     "watch:apps": "INPUT=src/apps/wallet-dashboard/index.html vite build --watch",

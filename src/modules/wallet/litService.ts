@@ -195,7 +195,7 @@ export async function initializeLitServices(): Promise<void> {
 function getOAuthAuthMethodInfo(userId: string) {
   return {
     authMethodType: ethers.utils.keccak256(
-      ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V05")
+      ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V06")
     ),
     authMethodId: ethers.utils.keccak256(
       ethers.utils.toUtf8Bytes(`oauth:${userId}`)
@@ -464,6 +464,90 @@ export async function getPKPsForAuthMethod(userId: string): Promise<PKP[]> {
 }
 
 /**
+ * Verify PKP auth methods and scopes
+ * Checks that the PKP was minted with the correct auth methods and scopes
+ */
+export async function verifyPkpAuthMethods(pkp: PKP): Promise<{
+  hasLitAction: boolean;
+  litActionHasSignAnything: boolean;
+  issues: string[];
+}> {
+  const litContracts = await getLitContractsClient();
+  const litActionIpfsCid = await getLitActionCodeIpfsCid();
+  const expectedLitActionId = `0x${Buffer.from(bs58.decode(litActionIpfsCid)).toString("hex")}`;
+  const litActionType = ethers.BigNumber.from(AUTH_METHOD_TYPE.LitAction);
+  const signAnythingScope = ethers.BigNumber.from(AUTH_METHOD_SCOPE.SignAnything);
+  
+  const issues: string[] = [];
+  let hasLitAction = false;
+  let litActionHasSignAnything = false;
+  
+  try {
+    // Get all auth methods for this PKP
+    const authMethods = await litContracts.pkpPermissionsContract.read.getPermittedAuthMethods(
+      pkp.tokenId
+    );
+    
+    logger.debug("Checking PKP auth methods", {
+      tokenId: pkp.tokenId,
+      authMethodCount: authMethods.length,
+    });
+    
+    // Check each auth method
+    for (const method of authMethods) {
+      const methodType = ethers.BigNumber.from(method.authMethodType);
+      const methodId = method.id;
+      
+      // Check if it's a Lit Action
+      if (methodType.eq(litActionType)) {
+        hasLitAction = true;
+        
+        // Verify it's the correct Lit Action CID
+        if (methodId.toLowerCase() !== expectedLitActionId.toLowerCase()) {
+          const cid = bs58.encode(Buffer.from(methodId.replace(/^0x/, ""), "hex"));
+          issues.push(`Lit Action CID mismatch: got ${cid}, expected ${litActionIpfsCid}`);
+          logger.warning("Lit Action CID mismatch", {
+            tokenId: pkp.tokenId,
+            got: cid,
+            expected: litActionIpfsCid,
+          });
+        }
+        
+        // Check if SignAnything scope is present
+        const hasScope = await litContracts.pkpPermissionsContract.read.isPermittedAuthMethodScopePresent(
+          pkp.tokenId,
+          litActionType,
+          methodId,
+          signAnythingScope
+        );
+        
+        if (hasScope) {
+          litActionHasSignAnything = true;
+          logger.debug("Lit Action has SignAnything scope", { tokenId: pkp.tokenId });
+        } else {
+          issues.push(`Lit Action missing SignAnything scope (scope 2)`);
+          logger.warning("Lit Action missing SignAnything scope", { tokenId: pkp.tokenId });
+        }
+      }
+    }
+    
+    if (!hasLitAction) {
+      issues.push("PKP does not have a Lit Action auth method");
+      logger.warning("PKP missing Lit Action auth method", { tokenId: pkp.tokenId });
+    }
+    
+    return {
+      hasLitAction,
+      litActionHasSignAnything,
+      issues,
+    };
+  } catch (error) {
+    logger.error("Failed to verify PKP auth methods", error as Error, { tokenId: pkp.tokenId });
+    throw error;
+  }
+}
+
+/**
  * Mint a new PKP wallet for a user
  */
 export async function mintPKP(
@@ -496,8 +580,13 @@ export async function mintPKP(
   ];
   const permittedAuthMethodPubkeys = ["0x", "0x"];
   // Ensure scope values are also BigNumbers
+  // Note: PKPSigning ability requires PersonalSign scope (2), not just SignAnything (1)
+  // Include both SignAnything and PersonalSign for maximum compatibility
   const permittedAuthMethodScopes = [
-    [ethers.BigNumber.from(AUTH_METHOD_SCOPE.SignAnything)],
+    [
+      ethers.BigNumber.from(AUTH_METHOD_SCOPE.SignAnything),
+      ethers.BigNumber.from(AUTH_METHOD_SCOPE.PersonalSign),
+    ],
     [ethers.BigNumber.from(AUTH_METHOD_SCOPE.NoPermissions)],
   ];
   
@@ -846,7 +935,12 @@ export async function getPkpSessionSigs(
  const signer = getSigner();
   const capacityTokenId = await getCapacityCredit();
 
-  logger.debug("Creating capacity delegation auth sig", { pkpAddress: pkp.ethAddress });
+  logger.debug("Creating capacity delegation auth sig", { 
+    pkpAddress: pkp.ethAddress,
+    capacityTokenId,
+    signerAddress: signer.address,
+    network: LIT_NETWORK_ENV,
+  });
 
   const { capacityDelegationAuthSig } =
     await litNodeClient.createCapacityDelegationAuthSig({
@@ -856,8 +950,30 @@ export async function getPkpSessionSigs(
       uses: "1",
     });
 
+  logger.debug("Created capacity delegation auth sig", {
+    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
+    capacityDelegationAuthSigType: typeof capacityDelegationAuthSig,
+    capacityDelegationAuthSigKeys: capacityDelegationAuthSig ? Object.keys(capacityDelegationAuthSig) : [],
+    capacityDelegationAuthSigFull: capacityDelegationAuthSig ? JSON.stringify(capacityDelegationAuthSig) : null,
+  });
 
-  logger.debug("Getting Lit Action session signatures", { pkpPublicKey: pkp.publicKey });
+  logger.debug("Getting Lit Action session signatures", { 
+    pkpPublicKey: pkp.publicKey,
+    pkpTokenId: pkp.tokenId,
+    pkpEthAddress: pkp.ethAddress,
+  });
+
+  // Verify PKP scopes before getting session sigs (for debugging production vs localhost)
+  try {
+    const verification = await verifyPkpAuthMethods(pkp);
+    logger.debug("PKP auth methods verification", {
+      hasLitAction: verification.hasLitAction,
+      litActionHasSignAnything: verification.litActionHasSignAnything,
+      issues: verification.issues,
+    });
+  } catch (error) {
+    logger.warning("Failed to verify PKP auth methods before session sigs", { error: (error as Error).message });
+  }
 
   // Use getLitActionSessionSigs when authentication is via Lit Action
   // See: https://developer.litprotocol.com/sdk/authentication/session-sigs/get-lit-action-session-sigs
@@ -868,28 +984,132 @@ export async function getPkpSessionSigs(
     throw new Error("getLitActionSessionSigs method not found in LitNodeClient. Please ensure you're using a compatible SDK version.");
   }
 
+  // Log detailed information for debugging production vs localhost differences
+  const litActionCodeBase64 = Buffer.from(litActionCode).toString("base64");
+  
+  // Compute expected Lit Action CID to verify we're using the right code
+  const expectedLitActionCid = await getLitActionCodeIpfsCid();
+  const expectedLitActionId = `0x${Buffer.from(bs58.decode(expectedLitActionCid)).toString("hex")}`;
+  
+  const jsParams = {
+    oauthUserData: JSON.stringify({
+      accessToken: oauthAccessToken,
+    }),
+    pkpTokenId: pkp.tokenId,
+  };
+  const resourceAbilityRequests = [
+    {
+      resource: new LitPKPResource("*"),
+      ability: LIT_ABILITY.PKPSigning,
+    },
+  ];
+  const expiration = new Date(Date.now() + 1000 * 60 * 10).toISOString();
+
+  // Verify the Lit Action code matches what's registered on the PKP
+  const litContracts = await getLitContractsClient();
+  const litActionType = ethers.BigNumber.from(AUTH_METHOD_TYPE.LitAction);
+  const personalSignScope = ethers.BigNumber.from(AUTH_METHOD_SCOPE.PersonalSign);
+  let registeredLitActionId: string | null = null;
+  let registeredLitActionScopes: any = null;
+  let hasPersonalSignScope = false;
+  
+  try {
+    const authMethods = await litContracts.pkpPermissionsContract.read.getPermittedAuthMethods(pkp.tokenId);
+    for (const method of authMethods) {
+      const methodType = ethers.BigNumber.from(method.authMethodType);
+      if (methodType.eq(litActionType)) {
+        registeredLitActionId = method.id;
+        // Get scopes for this Lit Action
+        const maxScopeId = 10;
+        registeredLitActionScopes = await litContracts.pkpPermissionsContract.read.getPermittedAuthMethodScopes(
+          pkp.tokenId,
+          litActionType,
+          method.id,
+          maxScopeId
+        );
+        // Check if PersonalSign scope is present
+        hasPersonalSignScope = registeredLitActionScopes && registeredLitActionScopes[personalSignScope.toNumber()];
+        break;
+      }
+    }
+  } catch (error) {
+    logger.warning("Failed to get registered Lit Action info", { error: (error as Error).message });
+  }
+  
+  // Warn if PersonalSign scope is missing (required for PKPSigning)
+  if (!hasPersonalSignScope && registeredLitActionId) {
+    const registeredCid = bs58.encode(Buffer.from(registeredLitActionId.replace(/^0x/, ""), "hex"));
+    logger.warning("PKP Lit Action missing PersonalSign scope (scope 2)", {
+      tokenId: pkp.tokenId,
+      registeredLitActionCid: registeredCid,
+      expectedLitActionCid: expectedLitActionCid,
+      fixCommand: `ts-node scripts/add-personalsign-scope.ts ${pkp.tokenId}`,
+    });
+  }
+
+  logger.debug("getLitActionSessionSigs parameters", {
+    expectedLitActionCid,
+    expectedLitActionId,
+    registeredLitActionId,
+    litActionIdMatch: registeredLitActionId ? registeredLitActionId.toLowerCase() === expectedLitActionId.toLowerCase() : null,
+    registeredLitActionScopes: registeredLitActionScopes ? registeredLitActionScopes.map((s: boolean, i: number) => s ? i : null).filter((s: any) => s !== null) : null,
+    hasPersonalSignScope,
+    litActionCodeHash: ethers.utils.keccak256(ethers.utils.toUtf8Bytes(litActionCode)),
+    pkpPublicKey: pkp.publicKey,
+    pkpTokenId: pkp.tokenId,
+    pkpEthAddress: pkp.ethAddress,
+    capacityTokenId,
+    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
+    capacityDelegationAuthSigKeys: capacityDelegationAuthSig ? Object.keys(capacityDelegationAuthSig) : [],
+    capacityDelegationAuthSigPreview: capacityDelegationAuthSig ? JSON.stringify(capacityDelegationAuthSig).substring(0, 200) + "..." : null,
+    litActionCodeLength: litActionCode.length,
+    litActionCodeBase64Length: litActionCodeBase64.length,
+    litActionCodeBase64Preview: litActionCodeBase64.substring(0, 50) + "...",
+    jsParams: JSON.stringify(jsParams),
+    resourceAbilityRequests: JSON.stringify(resourceAbilityRequests),
+    ability: LIT_ABILITY.PKPSigning,
+    expiration,
+    network: LIT_NETWORK_ENV,
+    rpcUrl: LIT_RPC_URL,
+    litDebug: process.env.LIT_DEBUG === "true",
+    nodeEnv: process.env.NODE_ENV,
+  });
+
+  // Log the exact request payload before sending
+  logger.debug("Calling getLitActionSessionSigs with payload", {
+    pkpPublicKey: pkp.publicKey,
+    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
+    capabilityAuthSigsLength: capacityDelegationAuthSig ? 1 : 0,
+    capacityDelegationAuthSigStructure: capacityDelegationAuthSig ? {
+      keys: Object.keys(capacityDelegationAuthSig),
+      hasSig: 'sig' in (capacityDelegationAuthSig as any),
+      hasDerivedVia: 'derivedVia' in (capacityDelegationAuthSig as any),
+      hasSignedMessage: 'signedMessage' in (capacityDelegationAuthSig as any),
+      hasAddress: 'address' in (capacityDelegationAuthSig as any),
+      fullSig: JSON.stringify(capacityDelegationAuthSig),
+    } : null,
+    litActionCodeLength: litActionCodeBase64.length,
+    litActionCodeFirst100: litActionCodeBase64.substring(0, 100),
+    jsParamsKeys: Object.keys(jsParams),
+    resourceAbilityRequestsLength: resourceAbilityRequests.length,
+    resourceAbilityRequests: JSON.stringify(resourceAbilityRequests),
+    expiration,
+  });
+
   const sessionSignatures = await litClient.getLitActionSessionSigs({
     pkpPublicKey: pkp.publicKey,
     capabilityAuthSigs: [capacityDelegationAuthSig],
-    //capabilityAuthSigs: [], // Empty since PKP is registered as payee
-    litActionCode: Buffer.from(litActionCode).toString("base64"),
+    litActionCode: litActionCodeBase64,
     debug: process.env.LIT_DEBUG === "true",
-    jsParams: {
-      oauthUserData: JSON.stringify({
-        accessToken: oauthAccessToken,
-      }),
-      pkpTokenId: pkp.tokenId,
-    },
-    resourceAbilityRequests: [
-      {
-        resource: new LitPKPResource("*"),
-        ability: LIT_ABILITY.PKPSigning,
-      },
-    ],
-    expiration: new Date(Date.now() + 1000 * 60 * 10).toISOString(), // 10 minutes
+    jsParams,
+    resourceAbilityRequests,
+    expiration,
   });
 
-  logger.debug("Got PKP session signatures");
+  logger.debug("Got PKP session signatures", {
+    sessionSigsKeys: Object.keys(sessionSignatures),
+    sessionSigsCount: Object.keys(sessionSignatures).length,
+  });
   return sessionSignatures;
 }
 

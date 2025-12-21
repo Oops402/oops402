@@ -44,6 +44,10 @@ async function main() {
 
   const app = express();
 
+  // Trust proxy for accurate client IP detection behind Fly.io load balancer
+  // Set to 1 to trust only the first proxy (Fly.io's load balancer)
+  app.set('trust proxy', 1);
+
   // Basic middleware
   // Intentionally permissive CORS for public MCP reference server
   // This allows any MCP client to test against this reference implementation
