@@ -951,10 +951,8 @@ export async function getPkpSessionSigs(
     });
 
   logger.debug("Created capacity delegation auth sig", {
-    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
-    capacityDelegationAuthSigType: typeof capacityDelegationAuthSig,
-    capacityDelegationAuthSigKeys: capacityDelegationAuthSig ? Object.keys(capacityDelegationAuthSig) : [],
-    capacityDelegationAuthSigFull: capacityDelegationAuthSig ? JSON.stringify(capacityDelegationAuthSig) : null,
+    capacityTokenId,
+    pkpAddress: pkp.ethAddress,
   });
 
   logger.debug("Getting Lit Action session signatures", { 
@@ -1047,54 +1045,26 @@ export async function getPkpSessionSigs(
     });
   }
 
-  logger.debug("getLitActionSessionSigs parameters", {
-    expectedLitActionCid,
-    expectedLitActionId,
-    registeredLitActionId,
-    litActionIdMatch: registeredLitActionId ? registeredLitActionId.toLowerCase() === expectedLitActionId.toLowerCase() : null,
-    registeredLitActionScopes: registeredLitActionScopes ? registeredLitActionScopes.map((s: boolean, i: number) => s ? i : null).filter((s: any) => s !== null) : null,
-    hasPersonalSignScope,
-    litActionCodeHash: ethers.utils.keccak256(ethers.utils.toUtf8Bytes(litActionCode)),
-    pkpPublicKey: pkp.publicKey,
-    pkpTokenId: pkp.tokenId,
-    pkpEthAddress: pkp.ethAddress,
-    capacityTokenId,
-    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
-    capacityDelegationAuthSigKeys: capacityDelegationAuthSig ? Object.keys(capacityDelegationAuthSig) : [],
-    capacityDelegationAuthSigPreview: capacityDelegationAuthSig ? JSON.stringify(capacityDelegationAuthSig).substring(0, 200) + "..." : null,
-    litActionCodeLength: litActionCode.length,
-    litActionCodeBase64Length: litActionCodeBase64.length,
-    litActionCodeBase64Preview: litActionCodeBase64.substring(0, 50) + "...",
-    jsParams: JSON.stringify(jsParams),
-    resourceAbilityRequests: JSON.stringify(resourceAbilityRequests),
-    ability: LIT_ABILITY.PKPSigning,
-    expiration,
-    network: LIT_NETWORK_ENV,
-    rpcUrl: LIT_RPC_URL,
-    litDebug: process.env.LIT_DEBUG === "true",
-    nodeEnv: process.env.NODE_ENV,
-  });
-
-  // Log the exact request payload before sending
-  logger.debug("Calling getLitActionSessionSigs with payload", {
-    pkpPublicKey: pkp.publicKey,
-    hasCapacityDelegationAuthSig: !!capacityDelegationAuthSig,
-    capabilityAuthSigsLength: capacityDelegationAuthSig ? 1 : 0,
-    capacityDelegationAuthSigStructure: capacityDelegationAuthSig ? {
-      keys: Object.keys(capacityDelegationAuthSig),
-      hasSig: 'sig' in (capacityDelegationAuthSig as any),
-      hasDerivedVia: 'derivedVia' in (capacityDelegationAuthSig as any),
-      hasSignedMessage: 'signedMessage' in (capacityDelegationAuthSig as any),
-      hasAddress: 'address' in (capacityDelegationAuthSig as any),
-      fullSig: JSON.stringify(capacityDelegationAuthSig),
-    } : null,
-    litActionCodeLength: litActionCodeBase64.length,
-    litActionCodeFirst100: litActionCodeBase64.substring(0, 100),
-    jsParamsKeys: Object.keys(jsParams),
-    resourceAbilityRequestsLength: resourceAbilityRequests.length,
-    resourceAbilityRequests: JSON.stringify(resourceAbilityRequests),
-    expiration,
-  });
+  // Log consolidated session sigs request (only essential info)
+  const isDevelopment = process.env.NODE_ENV !== "production";
+  if (isDevelopment) {
+    logger.debug("Getting Lit Action session signatures", {
+      pkpTokenId: pkp.tokenId,
+      pkpEthAddress: pkp.ethAddress,
+      expectedLitActionCid,
+      litActionIdMatch: registeredLitActionId ? registeredLitActionId.toLowerCase() === expectedLitActionId.toLowerCase() : null,
+      registeredLitActionScopes: registeredLitActionScopes ? registeredLitActionScopes.map((s: boolean, i: number) => s ? i : null).filter((s: any) => s !== null) : null,
+      hasPersonalSignScope,
+      capacityTokenId,
+      expiration,
+    });
+  } else {
+    logger.debug("Getting Lit Action session signatures", {
+      pkpTokenId: pkp.tokenId,
+      litActionIdMatch: registeredLitActionId ? registeredLitActionId.toLowerCase() === expectedLitActionId.toLowerCase() : null,
+      hasPersonalSignScope,
+    });
+  }
 
   const sessionSignatures = await litClient.getLitActionSessionSigs({
     pkpPublicKey: pkp.publicKey,

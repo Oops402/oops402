@@ -15,6 +15,7 @@ import { pkpSignTransaction } from "../wallet/litService.js";
 import { ethers } from "ethers";
 
 const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator";
+const isDevelopment = process.env.NODE_ENV !== "production";
 
 /**
  * Convert PKPEthersWallet to a viem Account
@@ -23,10 +24,12 @@ const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL || "https://x402.o
 async function createViemAccountFromPKPEthersWallet(
   pkpAccount: PKPAccount
 ): Promise<Account> {
-  logger.debug("Creating PKPEthersWallet", {
-    address: pkpAccount.address,
-    publicKey: pkpAccount.publicKey,
-  });
+  // Only log in development
+  if (isDevelopment) {
+    logger.debug("Creating PKPEthersWallet", {
+      address: pkpAccount.address,
+    });
+  }
 
   const litNodeClient = await getLitNodeClient();
 
@@ -51,10 +54,12 @@ async function createViemAccountFromPKPEthersWallet(
   
   pkpEthersWallet.provider = baseProvider;
   
-  logger.debug("Set Base provider on PKPEthersWallet for x402 service", {
-    providerUrl: baseRpcUrl.replace(/\/v2\/[^/]+/, '/v2/***'),
-    walletAddress: pkpAccount.address,
-  });
+  // Provider setup - only log in development
+  if (isDevelopment) {
+    logger.debug("Set Base provider on PKPEthersWallet", {
+      walletAddress: pkpAccount.address,
+    });
+  }
 
   // Create a viem Account that wraps PKPEthersWallet
   // Use type assertion to match viem's Account interface
@@ -62,27 +67,27 @@ async function createViemAccountFromPKPEthersWallet(
     type: "local" as const,
     address: getAddress(pkpAccount.address),
     async signMessage({ message }: { message: SignableMessage }): Promise<SignMessageReturnType> {
-      logger.debug("Signing message with PKPEthersWallet", { address: pkpAccount.address });
+      // Signing logs only in development
+      if (isDevelopment) {
+        logger.debug("Signing message", { address: pkpAccount.address });
+      }
       // PKPEthersWallet.signMessage expects a string or Bytes
       const messageStr = typeof message === 'string' ? message : (message as any).raw || String(message);
       const signature = await pkpEthersWallet.signMessage(messageStr);
       return signature as `0x${string}`;
     },
     async signTypedData(parameters: any): Promise<SignTypedDataReturnType> {
-      logger.debug("Signing typed data", { 
-        address: pkpAccount.address,
-        primaryType: parameters.primaryType,
-        domain: parameters.domain,
-        message: parameters.message,
-      });
+      // Signing logs only in development
+      if (isDevelopment) {
+        logger.debug("Signing typed data", { 
+          address: pkpAccount.address,
+          primaryType: parameters.primaryType,
+        });
+      }
       
       // For TransferWithAuthorization, use PKPEthersWallet's signature directly
       // PKPEthersWallet is a proper Ethers wallet that handles EIP-712 correctly
       if (parameters.primaryType === "TransferWithAuthorization") {
-        logger.debug("Signing TransferWithAuthorization with PKPEthersWallet", {
-          domain: parameters.domain,
-          message: parameters.message,
-        });
         
         // Verify domain values match what's on-chain (critical for signature validation)
         try {
@@ -127,22 +132,14 @@ async function createViemAccountFromPKPEthersWallet(
             }).catch(() => null),
           ]);
           
-          logger.debug("EIP-712 domain verification", {
-            providedDomain: {
+          // Domain verification - only log in development
+          if (isDevelopment) {
+            logger.debug("EIP-712 domain verification", {
               name: parameters.domain.name,
-              version: parameters.domain.version,
               chainId: parameters.domain.chainId,
               verifyingContract: parameters.domain.verifyingContract,
-            },
-            onChainValues: {
-              name: contractName,
-              version: contractVersion,
-              chainId,
-              verifyingContract,
-            },
-            nameMatch: contractName ? parameters.domain.name === contractName : "unknown",
-            versionMatch: contractVersion ? parameters.domain.version === contractVersion : "unknown",
-          });
+            });
+          }
           
           if (contractName && parameters.domain.name !== contractName) {
             logger.warning("Domain name mismatch!", {
@@ -167,10 +164,13 @@ async function createViemAccountFromPKPEthersWallet(
         // Use PKPEthersWallet._signTypedData - it's a proper Ethers wallet implementation
         // that handles EIP-712 signing correctly, including hash computation and signature formatting
         // This is the same approach that works in testDirectTransfer.ts with EOA wallets
-        logger.debug("Signing typed data with PKPEthersWallet", {
-          address: pkpAccount.address,
-          primaryType: parameters.primaryType,
-        });
+        // Signing logs only in development
+        if (isDevelopment) {
+          logger.debug("Signing typed data", {
+            address: pkpAccount.address,
+            primaryType: parameters.primaryType,
+          });
+        }
         
         const signature = await pkpEthersWallet._signTypedData(
           parameters.domain,
@@ -224,122 +224,45 @@ async function createViemAccountFromPKPEthersWallet(
             ethers.utils.hexConcat(["0x1901", domainSeparator, dataHash])
           );
           
-          logger.debug("Hash computation comparison", {
-            ethersHash,
-            contractHash,
-            match: ethersHash.toLowerCase() === contractHash.toLowerCase(),
-            domainSeparator,
-            dataHash,
-            TRANSFER_WITH_AUTHORIZATION_TYPEHASH,
-          });
+          // Only log hash comparison in development or on mismatch
+          const hashMatch = ethersHash.toLowerCase() === contractHash.toLowerCase();
+          if (isDevelopment && !hashMatch) {
+            logger.warning("Hash mismatch between ethers and contract", {
+              ethersHash,
+              contractHash,
+            });
+          }
           
           // Verify signature recovery with both hashes
           const recoveredEthers = ethers.utils.recoverAddress(ethersHash, signature);
           const recoveredContract = ethers.utils.recoverAddress(contractHash, signature);
           const expected = pkpAccount.address.toLowerCase();
           
-          logger.debug("PKPEthersWallet signature verification", {
-            expected,
-            recoveredEthers,
-            recoveredContract,
-            ethersMatch: expected === recoveredEthers.toLowerCase(),
-            contractMatch: expected === recoveredContract.toLowerCase(),
-            ethersHash,
-            contractHash,
-            signature,
-          });
+          const ethersMatch = expected === recoveredEthers.toLowerCase();
+          const contractMatch = expected === recoveredContract.toLowerCase();
           
-          if (expected !== recoveredEthers.toLowerCase()) {
-            logger.warning("PKPEthersWallet signature recovery mismatch with ethers hash!", {
+          // Only log detailed verification in development or on mismatch
+          if (isDevelopment) {
+            logger.debug("Signature verification", {
+              expected,
+              ethersMatch,
+              contractMatch,
+            });
+          }
+          
+          if (!ethersMatch) {
+            logger.warning("Signature recovery mismatch with ethers hash", {
               expected,
               recovered: recoveredEthers,
-              hash: ethersHash,
-              signature,
             });
           }
           
-          if (expected !== recoveredContract.toLowerCase()) {
-            logger.warning("PKPEthersWallet signature recovery mismatch with contract hash!", {
+          if (!contractMatch) {
+            logger.warning("Signature recovery mismatch with contract hash", {
               expected,
               recovered: recoveredContract,
-              hash: contractHash,
-              signature,
             });
           }
-          
-          // Also verify the signature bytes format matches what contract expects
-          // Contract reconstructs as: abi.encodePacked(r, s, v)
-          const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
-          const r = `0x${sigHex.slice(0, 64)}`;
-          const s = `0x${sigHex.slice(64, 128)}`;
-          const v = parseInt(sigHex.slice(128, 130), 16);
-          
-          // Simulate what the facilitator does: parseSignature and compute v
-          const parsedSig = parseSignature(signature as `0x${string}`);
-          const facilitatorV = parsedSig.v !== undefined ? Number(parsedSig.v) : 27 + (parsedSig.yParity || 0);
-          
-          // Check s value normalization (some contracts require s <= secp256k1n/2)
-          const secp256k1n = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-          const sValue = BigInt(s);
-          const needsNormalization = sValue > secp256k1n / 2n;
-          const normalizedS = needsNormalization ? `0x${(secp256k1n - sValue).toString(16).padStart(64, '0')}` : s;
-          const normalizedV = needsNormalization ? (v === 27 ? 28 : 27) : v;
-          
-          logger.debug("Facilitator signature parsing simulation", {
-            originalSignature: signature,
-            parsedR: parsedSig.r,
-            parsedS: parsedSig.s,
-            parsedV: parsedSig.v,
-            parsedYParity: parsedSig.yParity,
-            facilitatorV,
-            ourV: v,
-            vMatch: facilitatorV === v,
-            rMatch: parsedSig.r.toLowerCase() === r.toLowerCase(),
-            sMatch: parsedSig.s.toLowerCase() === s.toLowerCase(),
-            sValue: sValue.toString(),
-            needsNormalization,
-            normalizedS,
-            normalizedV,
-          });
-          
-          // Reconstruct signature bytes as contract does: abi.encodePacked(r, s, v)
-          // Use the facilitator's computed v and parsed r, s
-          const contractSignatureBytes = ethers.utils.hexConcat([
-            parsedSig.r,
-            parsedSig.s,
-            ethers.utils.hexlify(facilitatorV)
-          ]);
-          
-          // Also try with normalized s if needed
-          const normalizedSignatureBytes = needsNormalization
-            ? ethers.utils.hexConcat([
-                parsedSig.r,
-                normalizedS,
-                ethers.utils.hexlify(normalizedV)
-              ])
-            : null;
-          
-          // Verify recovery with reconstructed bytes
-          const recoveredReconstructed = ethers.utils.recoverAddress(contractHash, contractSignatureBytes);
-          const recoveredNormalized = normalizedSignatureBytes
-            ? ethers.utils.recoverAddress(contractHash, normalizedSignatureBytes)
-            : null;
-          
-          logger.debug("Contract signature format verification", {
-            r: parsedSig.r,
-            s: parsedSig.s,
-            v: facilitatorV,
-            originalSignature: signature,
-            reconstructedBytes: contractSignatureBytes,
-            recoveredReconstructed,
-            contractMatch: expected === recoveredReconstructed.toLowerCase(),
-            needsNormalization,
-            normalizedS,
-            normalizedV,
-            normalizedSignatureBytes,
-            recoveredNormalized,
-            normalizedMatch: recoveredNormalized ? expected === recoveredNormalized.toLowerCase() : null,
-          });
           
         } catch (error) {
           logger.warning("Failed to verify PKPEthersWallet signature recovery", {
@@ -363,9 +286,12 @@ async function createViemAccountFromPKPEthersWallet(
     },
   } as Account;
 
-  logger.debug("Created viem Account from PKPEthersWallet", {
-    address: viemAccount.address,
-  });
+  // Account creation - only log in development
+  if (isDevelopment) {
+    logger.debug("Created viem Account", {
+      address: viemAccount.address,
+    });
+  }
 
   return viemAccount;
 }
@@ -377,10 +303,12 @@ export async function createBuyerFetch(
   pkpAccount: PKPAccount,
   maxAmountPerRequest?: bigint
 ): Promise<typeof fetch> {
-  logger.debug("Creating x402 buyer fetch", { 
-    address: pkpAccount.address,
-    maxAmount: maxAmountPerRequest?.toString() 
-  });
+  // x402 buyer fetch creation - only log in development
+  if (isDevelopment) {
+    logger.debug("Creating x402 buyer fetch", { 
+      address: pkpAccount.address,
+    });
+  }
 
   // Create viem Account from PKPEthersWallet
   const viemAccount = await createViemAccountFromPKPEthersWallet(pkpAccount);
@@ -393,43 +321,21 @@ export async function createBuyerFetch(
   // Add hooks
   client
     .onBeforePaymentCreation(async (context) => {
-      logger.debug("Before payment creation", {
-        network: context.selectedRequirements.network,
-        scheme: context.selectedRequirements.scheme,
-        signerAddress: viemAccount.address,
-      });
+      if (isDevelopment) {
+        logger.debug("Creating payment", {
+          network: context.selectedRequirements.network,
+          scheme: context.selectedRequirements.scheme,
+          signerAddress: viemAccount.address,
+        });
+      }
     })
     .onAfterPaymentCreation(async (context) => {
-      const payloadStr = JSON.stringify(context.paymentPayload, (key, value) => {
-        // Handle BigInt serialization
-        if (typeof value === 'bigint') {
-          return value.toString();
-        }
-        return value;
-      });
-      
-      logger.debug("After payment creation", {
-        version: context.paymentPayload.x402Version,
-        payload: payloadStr,
-      });
-      
-      // Log signature details if available
-      if (context.paymentPayload.payload?.signature) {
+      if (isDevelopment && context.paymentPayload.payload?.signature) {
         const sig = context.paymentPayload.payload.signature as string;
-        const sigHex = sig.startsWith('0x') ? sig.slice(2) : sig;
-        const r = `0x${sigHex.slice(0, 64)}`;
-        const s = `0x${sigHex.slice(64, 128)}`;
-        const vHex = sigHex.slice(128, 130);
-        const v = parseInt(vHex, 16);
-        
-        logger.debug("Payment signature components", {
-          fullSignature: sig,
-          r,
-          s,
-          v,
-          vHex,
-          rLength: r.length,
-          sLength: s.length,
+        logger.debug("Payment created", {
+          version: context.paymentPayload.x402Version,
+          hasSignature: !!sig,
+          signatureLength: sig.length,
         });
       }
     })
@@ -470,10 +376,13 @@ export async function makePayment(
     options.maxAmountPerRequest
   );
 
-  logger.debug("Making payment request", {
-    url: resourceUrl,
-    method: options.method || "GET",
-  });
+  // Payment request - only log in development
+  if (isDevelopment) {
+    logger.debug("Making payment request", {
+      url: resourceUrl,
+      method: options.method || "GET",
+    });
+  }
 
   const response = await fetchWithPayment(resourceUrl, {
     method: (options.method || "GET") as RequestInit["method"],
@@ -501,10 +410,13 @@ export async function makePayment(
     }
   }
 
-  logger.debug("Payment request completed", {
-    status: response.status,
-    hasPaymentResponse: !!paymentResponse,
-  });
+  // Payment completion - only log in development
+  if (isDevelopment) {
+    logger.debug("Payment request completed", {
+      status: response.status,
+      hasPaymentResponse: !!paymentResponse,
+    });
+  }
 
   return {
     response,
