@@ -3,6 +3,7 @@ import { CloseIcon } from "./icons";
 import { formatAmountDisplay, truncateAddress } from "../utils/formatting";
 import { DiscoveryItem, PaymentResult } from "../types";
 import { styles } from "../styles";
+import { checkAuthError } from "../utils/auth";
 
 interface PaymentModalProps {
   isOpen: boolean;

@@ -14,7 +14,7 @@ const _litActionCode = async () => {
   const LIT_PKP_PERMISSIONS_CONTRACT_ADDRESS =
     "0x60C1ddC8b9e38F730F0e7B70A2F84C1A98A69167";
   const OAUTH_AUTH_METHOD_TYPE = ethers.utils.keccak256(
-    ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V08")
+    ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V09")
   );
   const AUTH0_DOMAIN = "oops402pay.us.auth0.com";
   // Maximum token age in seconds (10 minutes) - tokens older than this will be rejected

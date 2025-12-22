@@ -92,11 +92,6 @@ const toJsonSchema = (schema: z.ZodType<any>): ToolInput => {
 };
 
 /* Input schemas for tools implemented in this server */
-const EchoSchema = z.object({
-  message: z.string().describe("Message to echo"),
-});
-
-
 const WalletGetSchema = z.object({});
 
 const DiscoverAgentsSchema = z.object({
@@ -174,7 +169,6 @@ const PaymentHistorySchema = z.object({
 });
 
 enum ToolName {
-  ECHO = "echo",
   WALLET_GET = "get_x402_wallet",
   WALLET_BALANCE = "get_x402_wallet_balance",
   WALLET_TRANSFER = "transfer_x402_token",
@@ -185,11 +179,12 @@ enum ToolName {
   PAYMENT_HISTORY = "get_x402_payment_history",
 }
 
-enum PromptName {
-  SIMPLE = "simple_prompt",
-  COMPLEX = "complex_prompt",
-  RESOURCE = "resource_prompt",
-}
+// Placeholder prompts - not currently used
+// enum PromptName {
+//   SIMPLE = "simple_prompt",
+//   COMPLEX = "complex_prompt",
+//   RESOURCE = "resource_prompt",
+// }
 
 interface McpServerWrapper {
   server: Server;
@@ -204,274 +199,271 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     },
     {
       capabilities: {
-        prompts: {},
-        resources: { subscribe: true },
+        // prompts: {}, // Placeholder - not currently used
+        // resources: { subscribe: true }, // Placeholder - not currently used
         tools: {},
-        logging: {},
-        completions: {},
+        // logging: {}, // Placeholder - not currently used
+        // completions: {}, // Placeholder - not currently used
       },
     }
   );
 
-  const subscriptions: Set<string> = new Set();
+  // Placeholder resources and subscriptions - not currently used
+  // const subscriptions: Set<string> = new Set();
 
-  // Set up update interval for subscribed resources
-  const subsUpdateInterval = setInterval(() => {
-    for (const uri of subscriptions) {
-      server.notification({
-        method: "notifications/resources/updated",
-        params: { uri },
-      });
-    }
-  }, 10000);
+  // // Set up update interval for subscribed resources
+  // const subsUpdateInterval = setInterval(() => {
+  //   for (const uri of subscriptions) {
+  //     server.notification({
+  //       method: "notifications/resources/updated",
+  //       params: { uri },
+  //     });
+  //   }
+  // }, 10000);
 
-  let logLevel: LoggingLevel = "debug";
-  const messages = [
-    { level: "debug", data: "Debug-level message" },
-    { level: "info", data: "Info-level message" },
-    { level: "notice", data: "Notice-level message" },
-    { level: "warning", data: "Warning-level message" },
-    { level: "error", data: "Error-level message" },
-    { level: "critical", data: "Critical-level message" },
-    { level: "alert", data: "Alert level-message" },
-    { level: "emergency", data: "Emergency-level message" },
-  ];
+  // Placeholder logging - not currently used
+  // let logLevel: LoggingLevel = "debug";
+  // const messages = [
+  //   { level: "debug", data: "Debug-level message" },
+  //   { level: "info", data: "Info-level message" },
+  //   { level: "notice", data: "Notice-level message" },
+  //   { level: "warning", data: "Warning-level message" },
+  //   { level: "error", data: "Error-level message" },
+  //   { level: "critical", data: "Critical-level message" },
+  //   { level: "alert", data: "Alert level-message" },
+  //   { level: "emergency", data: "Emergency-level message" },
+  // ];
 
-  const isMessageIgnored = (level: LoggingLevel): boolean => {
-    const currentLevel = messages.findIndex((msg) => logLevel === msg.level);
-    const messageLevel = messages.findIndex((msg) => level === msg.level);
-    return messageLevel < currentLevel;
-  };
+  // const isMessageIgnored = (level: LoggingLevel): boolean => {
+  //   const currentLevel = messages.findIndex((msg) => logLevel === msg.level);
+  //   const messageLevel = messages.findIndex((msg) => level === msg.level);
+  //   return messageLevel < currentLevel;
+  // };
 
-  // Set up update interval for random log messages
-  const logsUpdateInterval = setInterval(() => {
-    const message = {
-      method: "notifications/message",
-      params: messages[Math.floor(Math.random() * messages.length)],
-    };
-    if (!isMessageIgnored(message.params.level as LoggingLevel))
-      server.notification(message);
-  }, 20000);
+  // // Set up update interval for random log messages
+  // const logsUpdateInterval = setInterval(() => {
+  //   const message = {
+  //     method: "notifications/message",
+  //     params: messages[Math.floor(Math.random() * messages.length)],
+  //   };
+  //   if (!isMessageIgnored(message.params.level as LoggingLevel))
+  //     server.notification(message);
+  // }, 20000);
 
+  // // Set up update interval for stderr messages
+  // const stdErrUpdateInterval = setInterval(() => {
+  //   const shortTimestamp = new Date().toLocaleTimeString([], {
+  //     hour: '2-digit',
+  //     minute: '2-digit',
+  //     second: '2-digit'
+  //   });
+  //   server.notification({
+  //     method: "notifications/stderr",
+  //     params: { content: `${shortTimestamp}: A stderr message` },
+  //   });
+  // }, 30000);
 
-  // Set up update interval for stderr messages
-  const stdErrUpdateInterval = setInterval(() => {
-    const shortTimestamp = new Date().toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-    server.notification({
-      method: "notifications/stderr",
-      params: { content: `${shortTimestamp}: A stderr message` },
-    });
-  }, 30000);
+  // Placeholder resources - not currently used
+  // const ALL_RESOURCES: Resource[] = Array.from({ length: 100 }, (_, i) => {
+  //   const uri = `test://static/resource/${i + 1}`;
+  //   if (i % 2 === 0) {
+  //     return {
+  //       uri,
+  //       name: `Resource ${i + 1}`,
+  //       mimeType: "text/plain",
+  //       text: `Resource ${i + 1}: This is a plaintext resource`,
+  //     };
+  //   } else {
+  //     const buffer = Buffer.from(`Resource ${i + 1}: This is a base64 blob`);
+  //     return {
+  //       uri,
+  //       name: `Resource ${i + 1}`,
+  //       mimeType: "application/octet-stream",
+  //       blob: buffer.toString("base64"),
+  //     };
+  //   }
+  // });
 
+  // const PAGE_SIZE = 10;
 
-  const ALL_RESOURCES: Resource[] = Array.from({ length: 100 }, (_, i) => {
-    const uri = `test://static/resource/${i + 1}`;
-    if (i % 2 === 0) {
-      return {
-        uri,
-        name: `Resource ${i + 1}`,
-        mimeType: "text/plain",
-        text: `Resource ${i + 1}: This is a plaintext resource`,
-      };
-    } else {
-      const buffer = Buffer.from(`Resource ${i + 1}: This is a base64 blob`);
-      return {
-        uri,
-        name: `Resource ${i + 1}`,
-        mimeType: "application/octet-stream",
-        blob: buffer.toString("base64"),
-      };
-    }
-  });
+  // Placeholder resource handlers - not currently used
+  // server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+  //   const cursor = request.params?.cursor;
+  //   let startIndex = 0;
 
-  const PAGE_SIZE = 10;
+  //   if (cursor) {
+  //     const decodedCursor = parseInt(atob(cursor), 10);
+  //     if (!isNaN(decodedCursor)) {
+  //       startIndex = decodedCursor;
+  //     }
+  //   }
 
-  server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
-    const cursor = request.params?.cursor;
-    let startIndex = 0;
+  //   const endIndex = Math.min(startIndex + PAGE_SIZE, ALL_RESOURCES.length);
+  //   const resources = ALL_RESOURCES.slice(startIndex, endIndex);
 
-    if (cursor) {
-      const decodedCursor = parseInt(atob(cursor), 10);
-      if (!isNaN(decodedCursor)) {
-        startIndex = decodedCursor;
-      }
-    }
+  //   let nextCursor: string | undefined;
+  //   if (endIndex < ALL_RESOURCES.length) {
+  //     nextCursor = btoa(endIndex.toString());
+  //   }
 
-    const endIndex = Math.min(startIndex + PAGE_SIZE, ALL_RESOURCES.length);
-    const resources = ALL_RESOURCES.slice(startIndex, endIndex);
+  //   return {
+  //     resources,
+  //     nextCursor,
+  //   };
+  // });
 
-    let nextCursor: string | undefined;
-    if (endIndex < ALL_RESOURCES.length) {
-      nextCursor = btoa(endIndex.toString());
-    }
+  // server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+  //   return {
+  //     resourceTemplates: [
+  //       {
+  //         uriTemplate: "test://static/resource/{id}",
+  //         name: "Static Resource",
+  //         description: "A static resource with a numeric ID",
+  //       },
+  //     ],
+  //   };
+  // });
 
-    return {
-      resources,
-      nextCursor,
-    };
-  });
+  // server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  //   const uri = request.params.uri;
 
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    return {
-      resourceTemplates: [
-        {
-          uriTemplate: "test://static/resource/{id}",
-          name: "Static Resource",
-          description: "A static resource with a numeric ID",
-        },
-      ],
-    };
-  });
+  //   if (uri.startsWith("test://static/resource/")) {
+  //     const index = parseInt(uri.split("/").pop() ?? "", 10) - 1;
+  //     if (index >= 0 && index < ALL_RESOURCES.length) {
+  //       const resource = ALL_RESOURCES[index];
+  //       return {
+  //         contents: [resource],
+  //       };
+  //     }
+  //   }
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const uri = request.params.uri;
+  //   throw new Error(`Unknown resource: ${uri}`);
+  // });
 
-    if (uri.startsWith("test://static/resource/")) {
-      const index = parseInt(uri.split("/").pop() ?? "", 10) - 1;
-      if (index >= 0 && index < ALL_RESOURCES.length) {
-        const resource = ALL_RESOURCES[index];
-        return {
-          contents: [resource],
-        };
-      }
-    }
+  // server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+  //   const { uri } = request.params;
+  //   subscriptions.add(uri);
+  //   return {};
+  // });
 
+  // server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+  //   subscriptions.delete(request.params.uri);
+  //   return {};
+  // });
 
-    throw new Error(`Unknown resource: ${uri}`);
-  });
+  // Placeholder prompt handlers - not currently used
+  // server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  //   return {
+  //     prompts: [
+  //       {
+  //         name: PromptName.SIMPLE,
+  //         description: "A prompt without arguments",
+  //       },
+  //       {
+  //         name: PromptName.COMPLEX,
+  //         description: "A prompt with arguments",
+  //         arguments: [
+  //           {
+  //             name: "temperature",
+  //             description: "Temperature setting",
+  //             required: true,
+  //           },
+  //           {
+  //             name: "style",
+  //             description: "Output style",
+  //             required: false,
+  //           },
+  //         ],
+  //       },
+  //       {
+  //         name: PromptName.RESOURCE,
+  //         description: "A prompt that includes an embedded resource reference",
+  //         arguments: [
+  //           {
+  //             name: "resourceId",
+  //             description: "Resource ID to include (1-100)",
+  //             required: true,
+  //           },
+  //         ],
+  //       },
+  //     ],
+  //   };
+  // });
 
-  server.setRequestHandler(SubscribeRequestSchema, async (request) => {
-    const { uri } = request.params;
-    subscriptions.add(uri);
-    return {};
-  });
+  // server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  //   const { name, arguments: args } = request.params;
 
-  server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
-    subscriptions.delete(request.params.uri);
-    return {};
-  });
+  //   if (name === PromptName.SIMPLE) {
+  //     return {
+  //       messages: [
+  //         {
+  //           role: "user",
+  //           content: {
+  //             type: "text",
+  //             text: "This is a simple prompt without arguments.",
+  //           },
+  //         },
+  //       ],
+  //     };
+  //   }
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => {
-    return {
-      prompts: [
-        {
-          name: PromptName.SIMPLE,
-          description: "A prompt without arguments",
-        },
-        {
-          name: PromptName.COMPLEX,
-          description: "A prompt with arguments",
-          arguments: [
-            {
-              name: "temperature",
-              description: "Temperature setting",
-              required: true,
-            },
-            {
-              name: "style",
-              description: "Output style",
-              required: false,
-            },
-          ],
-        },
-        {
-          name: PromptName.RESOURCE,
-          description: "A prompt that includes an embedded resource reference",
-          arguments: [
-            {
-              name: "resourceId",
-              description: "Resource ID to include (1-100)",
-              required: true,
-            },
-          ],
-        },
-      ],
-    };
-  });
+  //   if (name === PromptName.COMPLEX) {
+  //     return {
+  //       messages: [
+  //         {
+  //           role: "user",
+  //           content: {
+  //             type: "text",
+  //             text: `This is a complex prompt with arguments: temperature=${args?.temperature}, style=${args?.style}`,
+  //           },
+  //         },
+  //         {
+  //           role: "assistant",
+  //           content: {
+  //             type: "text",
+  //             text: "I understand. You've provided a complex prompt with temperature and style arguments. How would you like me to proceed?",
+  //           },
+  //         },
+  //       ],
+  //     };
+  //   }
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+  //   if (name === PromptName.RESOURCE) {
+  //     const resourceId = parseInt(args?.resourceId as string, 10);
+  //     if (isNaN(resourceId) || resourceId < 1 || resourceId > 100) {
+  //       throw new Error(
+  //         `Invalid resourceId: ${args?.resourceId}. Must be a number between 1 and 100.`
+  //       );
+  //     }
 
-    if (name === PromptName.SIMPLE) {
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: "This is a simple prompt without arguments.",
-            },
-          },
-        ],
-      };
-    }
+  //     const resourceIndex = resourceId - 1;
+  //     const resource = ALL_RESOURCES[resourceIndex];
 
-    if (name === PromptName.COMPLEX) {
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `This is a complex prompt with arguments: temperature=${args?.temperature}, style=${args?.style}`,
-            },
-          },
-          {
-            role: "assistant",
-            content: {
-              type: "text",
-              text: "I understand. You've provided a complex prompt with temperature and style arguments. How would you like me to proceed?",
-            },
-          },
-        ],
-      };
-    }
+  //     return {
+  //       messages: [
+  //         {
+  //           role: "user",
+  //           content: {
+  //             type: "text",
+  //             text: `This prompt includes Resource ${resourceId}. Please analyze the following resource:`,
+  //           },
+  //         },
+  //         {
+  //           role: "user",
+  //           content: {
+  //             type: "resource",
+  //             resource: resource,
+  //           },
+  //         },
+  //       ],
+  //     };
+  //   }
 
-    if (name === PromptName.RESOURCE) {
-      const resourceId = parseInt(args?.resourceId as string, 10);
-      if (isNaN(resourceId) || resourceId < 1 || resourceId > 100) {
-        throw new Error(
-          `Invalid resourceId: ${args?.resourceId}. Must be a number between 1 and 100.`
-        );
-      }
-
-      const resourceIndex = resourceId - 1;
-      const resource = ALL_RESOURCES[resourceIndex];
-
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `This prompt includes Resource ${resourceId}. Please analyze the following resource:`,
-            },
-          },
-          {
-            role: "user",
-            content: {
-              type: "resource",
-              resource: resource,
-            },
-          },
-        ],
-      };
-    }
-
-    throw new Error(`Unknown prompt: ${name}`);
-  });
+  //   throw new Error(`Unknown prompt: ${name}`);
+  // });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
-      {
-        name: ToolName.ECHO,
-        description: "Echoes back the input",
-        inputSchema: toJsonSchema(EchoSchema),
-      },
       {
         name: ToolName.WALLET_GET,
         description: "Get or create x402 wallet for the authenticated agent/user (returns the first wallet, creates one if none exists)",
@@ -522,13 +514,6 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     
     // Extract authInfo from extra (passed through Redis messages)
     const authInfo = extra?.authInfo;
-
-    if (name === ToolName.ECHO) {
-      const validatedArgs = EchoSchema.parse(args);
-      return {
-        content: [{ type: "text", text: `Echo: ${validatedArgs.message}` }],
-      };
-    }
 
     // Helper function to get user context from authInfo (passed through Redis messages)
     // No need to store tokens - they come with each request
@@ -1319,41 +1304,44 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     throw new Error(`Unknown tool: ${name}`);
   });
 
-  server.setRequestHandler(CompleteRequestSchema, async (request) => {
-    const { ref, argument } = request.params;
+  // Placeholder completion handler - not currently used
+  // server.setRequestHandler(CompleteRequestSchema, async (request) => {
+  //   const { ref, argument } = request.params;
 
-    if (ref.type === "ref/resource") {
-      return { completion: { values: [], hasMore: false, total: 0 } };
-    }
+  //   if (ref.type === "ref/resource") {
+  //     return { completion: { values: [], hasMore: false, total: 0 } };
+  //   }
 
-    if (ref.type === "ref/prompt") {
-      return { completion: { values: [], hasMore: false, total: 0 } };
-    }
+  //   if (ref.type === "ref/prompt") {
+  //     return { completion: { values: [], hasMore: false, total: 0 } };
+  //   }
 
-    throw new Error(`Unknown reference type`);
-  });
+  //   throw new Error(`Unknown reference type`);
+  // });
 
-  server.setRequestHandler(SetLevelRequestSchema, async (request) => {
-    const { level } = request.params;
-    logLevel = level;
+  // Placeholder logging level handler - not currently used
+  // server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+  //   const { level } = request.params;
+  //   logLevel = level;
 
-    // Demonstrate different log levels
-    await server.notification({
-      method: "notifications/message",
-      params: {
-        level: "debug",
-        logger: "test-server",
-        data: `Logging level set to: ${logLevel}`,
-      },
-    });
+  //   // Demonstrate different log levels
+  //   await server.notification({
+  //     method: "notifications/message",
+  //     params: {
+  //       level: "debug",
+  //       logger: "test-server",
+  //       data: `Logging level set to: ${logLevel}`,
+  //     },
+  //   });
 
-    return {};
-  });
+  //   return {};
+  // });
 
   const cleanup = async () => {
-    if (subsUpdateInterval) clearInterval(subsUpdateInterval);
-    if (logsUpdateInterval) clearInterval(logsUpdateInterval);
-    if (stdErrUpdateInterval) clearInterval(stdErrUpdateInterval);
+    // Placeholder intervals commented out - no cleanup needed
+    // if (subsUpdateInterval) clearInterval(subsUpdateInterval);
+    // if (logsUpdateInterval) clearInterval(logsUpdateInterval);
+    // if (stdErrUpdateInterval) clearInterval(stdErrUpdateInterval);
   };
 
   return { server, cleanup };

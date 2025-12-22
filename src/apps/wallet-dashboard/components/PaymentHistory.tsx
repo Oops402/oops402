@@ -239,7 +239,6 @@ export function PaymentHistory({ walletAddress }: PaymentHistoryProps) {
         </div>
       ) : payments.length === 0 ? (
         <div style={styles.emptyCard}>
-          <div style={styles.emptyIcon}>📋</div>
           <h3 style={styles.emptyTitle}>No payments found</h3>
           <p style={styles.emptyText}>
             No payment history found for this wallet in the selected timeframe.

@@ -211,13 +211,12 @@ function WalletDashboard() {
           <h1 style={styles.title}>Oops!402 Wallet</h1>
         </header>
         <div style={styles.errorCard}>
-          <div style={styles.errorIcon}>⚠️</div>
           <div>
-            <h3 style={styles.errorTitle}>Unable to load wallet</h3>
-            <p style={styles.errorMessage}>{error}</p>
+            <h3 style={styles.errorTitle}>Wallet session timeout</h3>
+            <p style={styles.errorMessage}>Please login again to continue.</p>
           </div>
           <button onClick={() => window.location.href = "/login"} style={styles.button} className="button">
-            Go to Login
+            Login again
           </button>
         </div>
       </div>

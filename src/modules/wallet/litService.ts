@@ -195,7 +195,7 @@ export async function initializeLitServices(): Promise<void> {
 function getOAuthAuthMethodInfo(userId: string) {
   return {
     authMethodType: ethers.utils.keccak256(
-      ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V08")
+      ethers.utils.toUtf8Bytes("AUTH0_AUTH_METHOD_V09")
     ),
     authMethodId: ethers.utils.keccak256(
       ethers.utils.toUtf8Bytes(`oauth:${userId}`)
@@ -548,58 +548,24 @@ export async function verifyPkpAuthMethods(pkp: PKP): Promise<{
 }
 
 /**
- * Mint a new PKP wallet for a user
+ * Mint a new PKP wallet for a user (direct contract call)
  */
-export async function mintPKP(
+export async function mintPKPDirectly(
   userId: string,
-  oauthAccessToken: string
+  permittedAuthMethodTypes: ethers.BigNumber[],
+  permittedAuthMethodIds: string[],
+  permittedAuthMethodPubkeys: string[],
+  permittedAuthMethodScopes: ethers.BigNumber[][],
+  litActionTypeBigNumber: ethers.BigNumber
 ): Promise<PKP> {
   const signer = getSigner();
   const litContracts = await getLitContractsClient();
   const pkpMintCost = await getPkpMintCost(litContracts);
-  const { authMethodType, authMethodId } = getOAuthAuthMethodInfo(userId);
-  const litActionIpfsCid = await getLitActionCodeIpfsCid();
 
   logger.debug("Minting new PKP", { userId });
 
   // Ensure mint cost is a BigNumber
   const mintCostValue = ethers.BigNumber.from(pkpMintCost);
-  
-  // Convert authMethodType (keccak256 hex string) to BigNumber for uint256 array
-  // The contract expects uint256[], so we need to convert the hex string to BigNumber
-  const authMethodTypeBigNumber = ethers.BigNumber.from(authMethodType);
-  
-  // Ensure all uint256 values are BigNumbers for consistency
-  const litActionTypeBigNumber = ethers.BigNumber.from(AUTH_METHOD_TYPE.LitAction);
-  
-  // Prepare parameters - ensure all uint256 values are BigNumbers
-  const permittedAuthMethodTypes = [litActionTypeBigNumber, authMethodTypeBigNumber];
-  const permittedAuthMethodIds = [
-    `0x${Buffer.from(bs58.decode(litActionIpfsCid)).toString("hex")}`,
-    authMethodId,
-  ];
-  const permittedAuthMethodPubkeys = ["0x", "0x"];
-  // Ensure scope values are also BigNumbers
-  // Note: PKPSigning ability requires PersonalSign scope (2), not just SignAnything (1)
-  // Include both SignAnything and PersonalSign for maximum compatibility
-  const permittedAuthMethodScopes = [
-    [
-      ethers.BigNumber.from(AUTH_METHOD_SCOPE.SignAnything),
-      ethers.BigNumber.from(AUTH_METHOD_SCOPE.PersonalSign),
-    ],
-    [ethers.BigNumber.from(AUTH_METHOD_SCOPE.NoPermissions)],
-  ];
-  
-  // Validate array lengths match (as per contract requirements)
-  if (permittedAuthMethodTypes.length !== permittedAuthMethodIds.length) {
-    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodIds (${permittedAuthMethodIds.length})`);
-  }
-  if (permittedAuthMethodTypes.length !== permittedAuthMethodPubkeys.length) {
-    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodPubkeys (${permittedAuthMethodPubkeys.length})`);
-  }
-  if (permittedAuthMethodTypes.length !== permittedAuthMethodScopes.length) {
-    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodScopes (${permittedAuthMethodScopes.length})`);
-  }
 
   logger.debug("Minting PKP with parameters", {
     keyType: AUTH_METHOD_TYPE.LitAction,
@@ -608,7 +574,6 @@ export async function mintPKP(
     permittedAuthMethodScopes: permittedAuthMethodScopes.map(scopes => scopes.map(s => s.toString())),
     mintCost: mintCostValue.toString(),
     mintCostHex: mintCostValue.toHexString(),
-    authMethodType: authMethodType,
     arrayLengths: {
       types: permittedAuthMethodTypes.length,
       ids: permittedAuthMethodIds.length,
@@ -699,6 +664,199 @@ export async function mintPKP(
   }
 
   return mintedPKP;
+}
+
+/**
+ * Mint a new PKP wallet for a user using the Lit relayer
+ */
+export async function mintPKPWithRelayer(
+  userId: string,
+  permittedAuthMethodTypes: ethers.BigNumber[],
+  permittedAuthMethodIds: string[],
+  permittedAuthMethodPubkeys: string[],
+  permittedAuthMethodScopes: ethers.BigNumber[][],
+  litActionTypeBigNumber: ethers.BigNumber
+): Promise<PKP> {
+  const litContracts = await getLitContractsClient();
+
+  logger.debug("Minting new PKP with relayer", { userId });
+
+  // Convert BigNumbers to strings for JSON serialization
+  const permittedAuthMethodTypesStr = permittedAuthMethodTypes.map(bn => bn.toString());
+  const permittedAuthMethodScopesStr = permittedAuthMethodScopes.map(scopes => 
+    scopes.map(s => s.toString())
+  );
+
+  // Determine relayer URL based on network
+  const relayerBaseUrl = process.env.LIT_RELAYER_URL || 
+    (LIT_NETWORK_ENV === "datil" 
+      ? "https://datil-relayer.getlit.dev" 
+      : `https://${LIT_NETWORK_ENV}-relayer.getlit.dev`);
+  const relayerUrl = `${relayerBaseUrl}/mint-next-and-add-auth-methods`;
+  const relayerApiKey = process.env.LIT_RELAYER_API_KEY || "test-api-key";
+
+  logger.debug("Calling relayer", {
+    relayerUrl,
+    keyType: litActionTypeBigNumber.toString(),
+    permittedAuthMethodTypes: permittedAuthMethodTypesStr,
+  });
+
+  const requestBody = {
+    keyType: litActionTypeBigNumber.toString(),
+    permittedAuthMethodTypes: permittedAuthMethodTypesStr,
+    permittedAuthMethodIds,
+    permittedAuthMethodPubkeys,
+    permittedAuthMethodScopes: permittedAuthMethodScopesStr,
+    addPkpEthAddressAsPermittedAddress: true,
+    sendPkpToItself: true,
+  };
+
+  const relayerResponse = await fetch(relayerUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": relayerApiKey,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!relayerResponse.ok) {
+    const errorText = await relayerResponse.text();
+    logger.error("Relayer request failed", new Error(errorText), {
+      status: relayerResponse.status,
+      statusText: relayerResponse.statusText,
+      relayerUrl,
+    });
+    throw new Error(
+      `Failed to mint PKP via relayer: ${relayerResponse.status} ${relayerResponse.statusText} - ${errorText}`
+    );
+  }
+
+  const relayerResponseJson = await relayerResponse.json() as { requestId?: string };
+  const txHash = relayerResponseJson.requestId;
+
+  if (!txHash) {
+    throw new Error("Relayer response missing requestId/transaction hash");
+  }
+
+  logger.debug("Relayer transaction submitted", { txHash });
+
+  // Wait for transaction and verify
+  const provider = getProvider();
+  let txReceipt: ethers.ContractReceipt;
+  try {
+    txReceipt = await provider.waitForTransaction(txHash);
+  } catch (error) {
+    logger.error("Failed to wait for relayer transaction", error as Error, { txHash });
+    throw error;
+  }
+
+  if (txReceipt.status !== 1) {
+    const error = new Error(
+      `Transaction failed with status: ${txReceipt.status}. Transaction hash: ${txHash}`
+    );
+    logger.error("Relayer transaction failed", error, { txHash, status: txReceipt.status });
+    throw error;
+  }
+
+  logger.debug("Relayer transaction confirmed", { txHash });
+
+  // Extract PKP info from transaction receipt
+  const mintedPKP = await getPkpInfoFromMintReceipt(txReceipt, litContracts);
+
+  // Add the new PKP as a payee
+  try {
+    await addPayee(mintedPKP.ethAddress);
+  } catch (err) {
+    logger.warning("Failed to add payee", { error: err });
+    // Don't throw - payee addition is not critical for PKP creation
+  }
+
+  logger.debug("PKP minted via relayer", {
+    tokenId: mintedPKP.tokenId,
+    ethAddress: mintedPKP.ethAddress,
+    txHash,
+  });
+
+  return mintedPKP;
+}
+
+/**
+ * Mint a new PKP wallet for a user
+ * Tries relayer first, falls back to direct minting if relayer fails
+ */
+export async function mintPKP(
+  userId: string,
+  oauthAccessToken: string
+): Promise<PKP> {
+  const { authMethodType, authMethodId } = getOAuthAuthMethodInfo(userId);
+  const litActionIpfsCid = await getLitActionCodeIpfsCid();
+
+  // Convert authMethodType (keccak256 hex string) to BigNumber for uint256 array
+  // The contract expects uint256[], so we need to convert the hex string to BigNumber
+  const authMethodTypeBigNumber = ethers.BigNumber.from(authMethodType);
+  
+  // Ensure all uint256 values are BigNumbers for consistency
+  const litActionTypeBigNumber = ethers.BigNumber.from(AUTH_METHOD_TYPE.LitAction);
+  
+  // Prepare parameters - ensure all uint256 values are BigNumbers
+  // These are shared between both direct and relayer minting methods
+  const permittedAuthMethodTypes = [litActionTypeBigNumber, authMethodTypeBigNumber];
+  const permittedAuthMethodIds = [
+    `0x${Buffer.from(bs58.decode(litActionIpfsCid)).toString("hex")}`,
+    authMethodId,
+  ];
+  const permittedAuthMethodPubkeys = ["0x", "0x"];
+  // Ensure scope values are also BigNumbers
+  // Note: PKPSigning ability requires PersonalSign scope (2), not just SignAnything (1)
+  // Include both SignAnything and PersonalSign for maximum compatibility
+  const permittedAuthMethodScopes = [
+    [
+      ethers.BigNumber.from(AUTH_METHOD_SCOPE.SignAnything),
+      ethers.BigNumber.from(AUTH_METHOD_SCOPE.PersonalSign),
+    ],
+    [ethers.BigNumber.from(AUTH_METHOD_SCOPE.NoPermissions)],
+  ];
+  
+  // Validate array lengths match (as per contract requirements)
+  if (permittedAuthMethodTypes.length !== permittedAuthMethodIds.length) {
+    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodIds (${permittedAuthMethodIds.length})`);
+  }
+  if (permittedAuthMethodTypes.length !== permittedAuthMethodPubkeys.length) {
+    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodPubkeys (${permittedAuthMethodPubkeys.length})`);
+  }
+  if (permittedAuthMethodTypes.length !== permittedAuthMethodScopes.length) {
+    throw new Error(`Array length mismatch: permittedAuthMethodTypes (${permittedAuthMethodTypes.length}) != permittedAuthMethodScopes (${permittedAuthMethodScopes.length})`);
+  }
+
+  // Try relayer first
+  try {
+    logger.debug("Attempting to mint PKP via relayer", { userId });
+    return await mintPKPWithRelayer(
+      userId,
+      permittedAuthMethodTypes,
+      permittedAuthMethodIds,
+      permittedAuthMethodPubkeys,
+      permittedAuthMethodScopes,
+      litActionTypeBigNumber
+    );
+  } catch (error) {
+    logger.warning("Relayer minting failed, falling back to direct minting", {
+      userId,
+      error: (error as Error).message,
+    });
+    
+    // Fall back to direct minting
+    logger.debug("Using direct minting for PKP", { userId });
+    return await mintPKPDirectly(
+      userId,
+      permittedAuthMethodTypes,
+      permittedAuthMethodIds,
+      permittedAuthMethodPubkeys,
+      permittedAuthMethodScopes,
+      litActionTypeBigNumber
+    );
+  }
 }
 
 /**
