@@ -31,7 +31,7 @@ export function PromoteModal({
   const [loading, setLoading] = useState(false);
   const [paying, setPaying] = useState(false);
   const [validating, setValidating] = useState(false);
-  const [schema, setSchema] = useState<{ hasX402Schema?: boolean } | null>(null);
+  const [schema, setSchema] = useState<{ hasX402Schema?: boolean; supportedMethods?: string[]; schema?: any } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [feeConfig, setFeeConfig] = useState<FeeConfig | null>(null);
@@ -104,7 +104,7 @@ export function PromoteModal({
   useEffect(() => {
     // Check if hasX402Schema is actually true (handle both boolean and truthy values)
     const hasX402SchemaValue = schema?.hasX402Schema;
-    const hasValidSchema = hasX402SchemaValue === true || hasX402SchemaValue === 'true' || (typeof hasX402SchemaValue === 'boolean' && hasX402SchemaValue);
+    const hasValidSchema = hasX402SchemaValue === true || (typeof hasX402SchemaValue === 'boolean' && hasX402SchemaValue);
     const isDisabled = paying || loading || !hasValidSchema || !feeConfig?.paymentRecipient || !walletAddress;
     console.log('Pay & Promote button state:', {
       isDisabled,
@@ -130,53 +130,65 @@ export function PromoteModal({
     setSchema(null);
 
     try {
-      const response = await fetch("/api/discover/schema", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          url: resourceUrl.trim(),
-          method: "GET",
-        }),
-      });
+      // Validate both GET and POST methods
+      const methods = ['GET', 'POST'];
+      const validationResults = await Promise.all(
+        methods.map(async (method) => {
+          try {
+            const response = await fetch("/api/discover/schema", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                url: resourceUrl.trim(),
+                method,
+              }),
+            });
 
-      const data = await response.json();
-      if (await checkAuthError(response, data)) {
-        return;
-      }
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to validate schema");
-      }
+            const data = await response.json();
+            if (await checkAuthError(response, data)) {
+              return { method, valid: false, data: null, error: 'Authentication error' };
+            }
+            if (!response.ok) {
+              return { method, valid: false, data: null, error: data.error || "Failed to validate schema" };
+            }
 
-      // Check if resource has valid x402 schema
-      // The API returns hasX402Schema as a boolean, but we also check the schema object
-      const hasX402SchemaFlag = data.hasX402Schema === true || data.hasX402Schema === 'true';
-      const hasSchemaAccepts = data.schema && (
-        Array.isArray(data.schema.accepts) && data.schema.accepts.length > 0 ||
-        data.schema.x402Version !== undefined
+            // Check if resource has valid x402 schema
+            const hasX402SchemaFlag = data.hasX402Schema === true || data.hasX402Schema === 'true';
+            const hasSchemaAccepts = data.schema && (
+              Array.isArray(data.schema.accepts) && data.schema.accepts.length > 0 ||
+              data.schema.x402Version !== undefined
+            );
+            const hasValidSchema = hasX402SchemaFlag || hasSchemaAccepts;
+
+            return { method, valid: hasValidSchema, data, error: null };
+          } catch (err) {
+            return { method, valid: false, data: null, error: err instanceof Error ? err.message : "Validation failed" };
+          }
+        })
       );
-      const hasValidSchema = hasX402SchemaFlag || hasSchemaAccepts;
+
+      // Find the first valid result (prefer GET, then POST)
+      const validResult = validationResults.find(r => r.valid);
+      const supportedMethods = validationResults.filter(r => r.valid).map(r => r.method);
       
-      console.log('Schema validation result:', {
-        hasX402SchemaFlag,
-        hasSchemaAccepts,
-        hasValidSchema,
-        dataHasX402Schema: data.hasX402Schema,
-        dataSchema: data.schema ? {
-          hasAccepts: !!data.schema.accepts,
-          acceptsLength: Array.isArray(data.schema.accepts) ? data.schema.accepts.length : 'not array',
-          x402Version: data.schema.x402Version,
-        } : null,
+      console.log('Schema validation results:', {
+        getResult: validationResults.find(r => r.method === 'GET'),
+        postResult: validationResults.find(r => r.method === 'POST'),
+        supportedMethods,
+        validResult: validResult ? { method: validResult.method, hasData: !!validResult.data } : null,
       });
-      
-      if (!hasValidSchema) {
-        throw new Error("Resource does not have a valid x402 schema. Please ensure the resource supports x402 payments.");
+
+      if (!validResult) {
+        const errors = validationResults.map(r => `${r.method}: ${r.error || 'no valid schema'}`).join('; ');
+        throw new Error(`Resource does not have a valid x402 schema for GET or POST methods. ${errors}`);
       }
 
       // Normalize the schema object to ensure hasX402Schema is a boolean
       setSchema({
-        ...data,
+        ...validResult.data,
         hasX402Schema: true, // Force to boolean true since validation passed
+        supportedMethods, // Store which methods are supported
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Schema validation failed");
@@ -211,7 +223,7 @@ export function PromoteModal({
     console.log('handlePayment called', { days, feeConfig, walletAddress, schema });
     
     if (!days || !feeConfig || !walletAddress) {
-      const missing = [];
+      const missing: string[] = [];
       if (!days) missing.push('days');
       if (!feeConfig) missing.push('feeConfig');
       if (!walletAddress) missing.push('walletAddress');
@@ -385,6 +397,11 @@ export function PromoteModal({
                   <div style={styles.successText}>
                     ✓ Resource has valid x402 schema
                   </div>
+                  {schema.supportedMethods && schema.supportedMethods.length > 0 && (
+                    <div style={styles.hintText}>
+                      Supported methods: {schema.supportedMethods.join(', ')}
+                    </div>
+                  )}
                   {schema.schema?.accepts && Array.isArray(schema.schema.accepts) && (
                     <div style={styles.hintText}>
                       {schema.schema.accepts.length} payment option(s) found
@@ -455,7 +472,7 @@ export function PromoteModal({
             </button>
             {!paymentTxHash ? (() => {
               const hasX402SchemaValue = schema?.hasX402Schema;
-              const hasValidSchema = hasX402SchemaValue === true || hasX402SchemaValue === 'true' || (typeof hasX402SchemaValue === 'boolean' && hasX402SchemaValue);
+              const hasValidSchema = hasX402SchemaValue === true || (typeof hasX402SchemaValue === 'boolean' && hasX402SchemaValue);
               const isButtonDisabled = paying || loading || !hasValidSchema || !feeConfig?.paymentRecipient || !walletAddress;
               return (
                 <button

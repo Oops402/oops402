@@ -123,7 +123,7 @@ Other configurations are available: see [Development Setup](#development-setup),
 This server provides the following MCP tools for AI agents:
 
 ### Wallet Tools
-- **`get_x402_wallet`**: Get or create a self-custodial x402 wallet for the authenticated agent/user. Wallets are created using Lit Protocol Programmable Key Pairs (PKPs), which are cryptographically bound to the user's Auth0 OAuth identity via Lit Actions.
+- **`get_x402_wallet`**: Get or create a self-custodial x402 wallet for the authenticated agent/user. Wallets are created using Lit Protocol Programmable Key Pairs (PKPs), which are cryptographically bound to the user's Auth0 OAuth identity via Lit Actions. Returns wallet address, ETH and USDC balances, budget preferences (per-request max, session budget, session spending, remaining budget), and discovery preferences (only promoted resources, minimum agent score).
 - **`get_x402_wallet_balance`**: Get ETH and token balances for an x402 wallet
 - **`transfer_x402_token`**: Transfer ERC20 tokens (defaults to USDC on Base network)
 
@@ -134,11 +134,58 @@ This server provides the following MCP tools for AI agents:
 
 ### Payment Tools
 - **`make_x402_payment`**: Make x402 payment to a protected resource/service
+- **`get_x402_payment_history`**: Get recent payment history for an x402 wallet address using x402scan. Returns a list of payments made by the wallet, including transaction hashes, amounts, recipients, timestamps, and other payment details.
+
+### Preferences & Budget Tools
+- **`set_x402_preferences`**: Set user preferences for budget limits and discovery filters. Budget amounts are in human-readable USDC format (e.g., '0.05' for 0.05 USDC). All parameters are optional for partial updates. Supports:
+  - **Budget Limits**: Set per-request maximum and session budget limits
+  - **Discovery Filters**: Configure to show only promoted resources/agents and set minimum agent score threshold
 
 ### Additional MCP Features
 - **[Resources](https://modelcontextprotocol.io/docs/concepts/resources)**: Example resources with pagination and subscription support
 - **[Prompts](https://modelcontextprotocol.io/docs/concepts/prompts)**: Simple and complex prompts with argument support
 - **Transports**: Streamable HTTP (recommended) and SSE (legacy)
+
+## Budget & Preferences System
+
+Oops!402 includes a comprehensive budget and preferences system that allows users to control spending limits and filter discovery results based on trust and quality metrics.
+
+### Budget Limits
+
+Users can set two types of budget limits that persist across sessions:
+
+- **Per-Request Maximum**: Maximum amount allowed per individual payment request (e.g., 0.05 USDC)
+- **Session Budget**: Total amount available for the current session (e.g., 5.00 USDC)
+
+Budget limits are enforced before payments are processed:
+- Payments exceeding the per-request maximum are blocked
+- Payments that would exceed the remaining session budget are blocked
+- Session spending is tracked in Redis and automatically resets when the session expires
+
+### Discovery Preferences
+
+Users can configure discovery filters to control which services and agents are shown:
+
+- **Only Promoted Resources/Agents**: When enabled, only resources and agents with active promotions are shown in discovery results. This helps users discover validated, high-quality services.
+- **Minimum Agent Score**: Set a minimum average score threshold (0-100) for agents. Only agents with scores at or above this threshold will be shown in discovery results.
+
+### Storage Architecture
+
+- **Supabase**: Persistent user preferences (budget limits, discovery filters) - survives sessions and server restarts
+- **Redis**: Session-scoped spending tracking (temporary, tied to OAuth token/session lifecycle, typically 7 days)
+
+Preferences are automatically applied to:
+- Discovery endpoints (`/api/discover/agents`, `/api/discover/bazaar`)
+- MCP tools (`discover_x402_agents`, `search_x402_bazaar_resources`)
+- Payment validation (budget limits are checked before processing payments)
+
+### Web Dashboard
+
+The wallet dashboard (`/wallet`) provides a user-friendly interface for managing budget and trust settings:
+- View current budget limits and remaining session budget
+- Configure per-request maximum and session budget
+- Set discovery preferences (only promoted, minimum agent score)
+- Monitor session spending in real-time
 
 ## Development Setup
 
@@ -419,6 +466,7 @@ Run the SQL schema in `docs/supabase-schema.sql` on your Supabase database to cr
 - `oops402_search_analytics` - Search query tracking
 - `oops402_click_analytics` - Click tracking for promoted results
 - `oops402_promotion_impressions` - Impression tracking for CTR calculation
+- `oops402_user_preferences` - User preferences for budget limits and discovery filters
 
 ### Privacy & Legal Considerations
 
@@ -491,6 +539,9 @@ npm run test:e2e  # End-to-end tests
 │   │   ├── promotions/       # Promotion system
 │   │   │   ├── service.ts    # Promotion CRUD and validation
 │   │   │   └── types.ts      # Promotion type definitions
+│   │   ├── preferences/      # Budget and preferences system
+│   │   │   ├── service.ts    # Preferences CRUD (Supabase) and session spending (Redis)
+│   │   │   └── types.ts      # Preferences type definitions
 │   │   ├── analytics/        # Analytics and tracking
 │   │   │   ├── service.ts    # Payment, search, click, and impression tracking
 │   │   │   └── types.ts      # Analytics type definitions

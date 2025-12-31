@@ -75,6 +75,7 @@ export interface AgentSummary {
   mcpTools?: string[];
   a2aSkills?: string[];
   averageScore?: number | null;
+  promoted?: boolean; // Indicates if this agent is promoted
 }
 
 export interface AgentSearchResponse {

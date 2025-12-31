@@ -32,6 +32,14 @@ import { getSessionOwner } from "./redisTransport.js";
 import { readMcpInstallation } from "../../auth/services/auth.js";
 import { logger } from "../../shared/logger.js";
 import { config } from "../../../config.js";
+import {
+  getUserPreferences,
+  setUserPreferences,
+  getBudgetLimits,
+  getDiscoveryFilters,
+  getSessionSpent,
+  getRemainingBudget,
+} from "../../preferences/service.js";
 
 type ToolInput = Tool["inputSchema"];
 
@@ -84,6 +92,27 @@ function formatAmountDisplay(amount: string, decimals: number = USDC_DECIMALS): 
     minimumFractionDigits: 0, 
     maximumFractionDigits: decimals 
   });
+}
+
+/**
+ * Parse human-readable USDC amount to atomic units
+ * @param input - Human-readable amount (e.g., "0.05", "5.00")
+ * @param decimals - Number of decimals (default: 6 for USDC)
+ * @returns Atomic units as string, or null if invalid
+ */
+function parseUSDC(input: string, decimals: number = USDC_DECIMALS): string | null {
+  const sanitized = input.replace(/,/g, "").trim();
+  if (sanitized === "") return null;
+  if (!/^\d*(\.\d{0,6})?$/.test(sanitized)) return null;
+  const [whole, fracRaw] = sanitized.split(".");
+  const frac = (fracRaw || "").padEnd(decimals, "0").slice(0, decimals);
+  try {
+    const wholePart = BigInt(whole || "0") * BigInt(10 ** decimals);
+    const fracPart = BigInt(frac || "0");
+    return (wholePart + fracPart).toString();
+  } catch {
+    return null;
+  }
 }
 
 // Helper to convert Zod schema to JSON schema using Zod v4's native support
@@ -179,7 +208,7 @@ const WalletTransferTokenSchema = z.object({
 const DiscoverBazaarResourcesSchema = z.object({
   type: z.string().optional().describe("Filter by protocol type (e.g., 'http', 'mcp')"),
   resource: z.string().optional().describe("Filter by resource URL substring"),
-  keyword: z.string().optional().describe("Search keyword - matches resource URL or description"),
+  keyword: z.union([z.string(), z.array(z.string())]).optional().describe("Search keyword(s) - matches resource URL or description. Can be a single string or array of strings. All keywords must match (AND logic)."),
   limit: z.number().optional().describe("Maximum number of results to return (default: 50)"),
   offset: z.number().optional().describe("Offset for pagination (default: 0)"),
   sortBy: z.enum(['price_asc', 'price_desc']).optional().describe("Sort by price: 'price_asc' for low to high, 'price_desc' for high to low"),
@@ -192,6 +221,13 @@ const PaymentHistorySchema = z.object({
   timeframe: z.number().optional().describe("Timeframe in days (default: 30)"),
 });
 
+const SetPreferencesSchema = z.object({
+  perRequestMax: z.string().optional().describe("Maximum amount per request in human-readable USDC (e.g., '0.05' for 0.05 USDC)"),
+  sessionBudget: z.string().optional().describe("Total session budget in human-readable USDC (e.g., '5.00' for 5.00 USDC)"),
+  onlyPromoted: z.boolean().optional().describe("Only show promoted resources/agents"),
+  minAgentScore: z.number().min(0).max(100).optional().describe("Minimum average score for agents (0-100)"),
+});
+
 enum ToolName {
   WALLET_GET = "get_x402_wallet",
   WALLET_BALANCE = "get_x402_wallet_balance",
@@ -201,6 +237,7 @@ enum ToolName {
   PAY = "make_x402_payment",
   DISCOVER_BAZAAR_RESOURCES = "search_x402_bazaar_resources",
   PAYMENT_HISTORY = "get_x402_payment_history",
+  SET_PREFERENCES = "set_x402_preferences",
 }
 
 // Placeholder prompts - not currently used
@@ -639,6 +676,11 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         description: "Get recent payment history for an x402 wallet address using x402scan. Returns a list of payments made by the wallet, including transaction hashes, amounts, recipients, timestamps, and other payment details.",
         inputSchema: toJsonSchema(PaymentHistorySchema),
       },
+      {
+        name: ToolName.SET_PREFERENCES,
+        description: "Set user preferences for budget limits and discovery filters. Budget amounts are in human-readable USDC format (e.g., '0.05' for 0.05 USDC). All parameters are optional for partial updates.",
+        inputSchema: toJsonSchema(SetPreferencesSchema),
+      },
     ];
 
     return { tools };
@@ -771,27 +813,65 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         // Generate QR code for wallet address
         const qrCodeDataUrl = await generateQRCodeDataUrl(pkp.ethAddress);
         
+        // Get balances
+        const balances = await getBalances(pkp.ethAddress as `0x${string}`);
+        
+        // Get preferences
+        const preferences = await getUserPreferences(userId);
+        const budgetLimits = await getBudgetLimits(userId);
+        const discoveryFilters = await getDiscoveryFilters(userId);
+        
+        // Get session spending (if sessionId available)
+        let sessionSpent = "0";
+        let remainingBudget: string | null = null;
+        if (sessionId) {
+          sessionSpent = await getSessionSpent(sessionId);
+          remainingBudget = await getRemainingBudget(userId, sessionId);
+        }
+        
+        // Format amounts for human-readable display
+        const formatUSDC = (atomic: string | null): string | null => {
+          if (!atomic) return null;
+          return formatTokenAmount(atomic, USDC_DECIMALS);
+        };
+        
+        const response = {
+          success: true,
+          wallet: {
+            address: pkp.ethAddress,
+          },
+          balances: {
+            native: formatTokenAmount(balances.native, 18), // ETH has 18 decimals
+            token: formatTokenAmount(balances.token, USDC_DECIMALS), // USDC has 6 decimals
+          },
+          preferences: {
+            budget: {
+              perRequestMax: formatUSDC(budgetLimits.perRequestMaxAtomic),
+              sessionBudget: formatUSDC(budgetLimits.sessionBudgetAtomic),
+              sessionSpent: formatUSDC(sessionSpent),
+              remainingBudget: remainingBudget ? formatUSDC(remainingBudget) : null,
+            },
+            discovery: {
+              onlyPromoted: discoveryFilters.onlyPromoted,
+              minAgentScore: discoveryFilters.minAgentScore,
+            },
+          },
+          managementUrl: `${config.baseUri}/wallet`,
+        };
+        
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({
-                success: true,
-                wallet: {
-                  address: pkp.ethAddress,
-                  publicKey: pkp.publicKey,
-                  tokenId: pkp.tokenId,
-                },
-                managementUrl: `${config.baseUri}/wallet`,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
           structuredContent: {
             wallet: {
               address: pkp.ethAddress,
-              publicKey: pkp.publicKey,
-              tokenId: pkp.tokenId,
             },
+            balances: response.balances,
+            preferences: response.preferences,
             qrCodeDataUrl,
           },
           _meta: {
@@ -817,6 +897,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
     if (name === ToolName.DISCOVER_AGENTS) {
       try {
         const validatedArgs = DiscoverAgentsSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
         
         // If searching by reputation, use reputation search
         if (validatedArgs.searchByReputation) {
@@ -850,10 +931,45 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             reputationParams.sort = validatedArgs.sort;
           }
           
+          // Apply user preferences
+          try {
+            const discoveryFilters = await getDiscoveryFilters(userId);
+            // Apply minAgentScore if not already set
+            if (discoveryFilters.minAgentScore !== null && reputationParams.minAverageScore === undefined) {
+              reputationParams.minAverageScore = discoveryFilters.minAgentScore;
+            }
+          } catch (error) {
+            logger.debug("Failed to get discovery filters, skipping filter", { error });
+          }
+          
           logger.debug("Discovering agents by reputation", reputationParams);
           const result = await searchAgentsByReputation(reputationParams);
           
-          const agents = result.items.map(agent => ({
+          // Apply onlyPromoted filter if preference is enabled
+          let filteredItems = result.items;
+          try {
+            const discoveryFilters = await getDiscoveryFilters(userId);
+            if (discoveryFilters.onlyPromoted) {
+              // Get promoted agent IDs
+              const { getActivePromotions } = await import('../../promotions/service.js');
+              const activePromotions = await getActivePromotions({
+                resourceType: 'agent',
+              });
+              const promotedAgentIds = new Set<string>();
+              for (const promotion of activePromotions) {
+                if (promotion.agent_id) {
+                  promotedAgentIds.add(promotion.agent_id.toLowerCase());
+                }
+              }
+              filteredItems = result.items.filter(agent =>
+                promotedAgentIds.has(agent.agentId.toLowerCase())
+              );
+            }
+          } catch (error) {
+            logger.debug("Failed to apply onlyPromoted filter", { error });
+          }
+          
+          const agents = filteredItems.map(agent => ({
             agentId: agent.agentId,
             chainId: agent.chainId,
             name: agent.name,
@@ -877,7 +993,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                   agents,
                   nextCursor: result.nextCursor,
                   meta: result.meta,
-                  total: result.items.length,
+                  total: filteredItems.length,
                 }, null, 2),
               },
             ],
@@ -887,7 +1003,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             _meta: {
               "openai/outputTemplate": "ui://widget/agents.html",
               "openai/toolInvocation/invoking": "Searching agents...",
-              "openai/toolInvocation/invoked": "Found agents",
+              "openai/toolInvocation/invoked": `Found ${agents.length} agent${agents.length !== 1 ? 's' : ''}`,
             },
           };
         } else {
@@ -939,10 +1055,46 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             searchParams.sort = validatedArgs.sort;
           }
           
+          // Apply user preferences
+          try {
+            const discoveryFilters = await getDiscoveryFilters(userId);
+            // Apply minAgentScore to reputation search if not already set
+            if (validatedArgs.searchByReputation && discoveryFilters.minAgentScore !== null && validatedArgs.minAverageScore === undefined) {
+              searchParams.minAverageScore = discoveryFilters.minAgentScore;
+            }
+          } catch (error) {
+            logger.debug("Failed to get discovery filters, skipping filter", { error });
+          }
+          
           logger.debug("Discovering agents", searchParams);
           const result = await searchAgents(searchParams, undefined); // No sessionIdHash in MCP context
           
-          const agents = result.items.map(agent => ({
+          // Apply onlyPromoted filter if preference is enabled
+          let filteredItems = result.items;
+          try {
+            const discoveryFilters = await getDiscoveryFilters(userId);
+            if (discoveryFilters.onlyPromoted) {
+              // Get promoted agent IDs
+              const { getActivePromotions } = await import('../../promotions/service.js');
+              const activePromotions = await getActivePromotions({
+                resourceType: 'agent',
+                keyword: validatedArgs.name,
+              });
+              const promotedAgentIds = new Set<string>();
+              for (const promotion of activePromotions) {
+                if (promotion.agent_id) {
+                  promotedAgentIds.add(promotion.agent_id.toLowerCase());
+                }
+              }
+              filteredItems = result.items.filter(agent =>
+                promotedAgentIds.has(agent.agentId.toLowerCase())
+              );
+            }
+          } catch (error) {
+            logger.debug("Failed to apply onlyPromoted filter", { error });
+          }
+          
+          const agents = filteredItems.map(agent => ({
             agentId: agent.agentId,
             chainId: agent.chainId,
             name: agent.name,
@@ -954,8 +1106,6 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             owners: agent.owners,
             operators: agent.operators,
             walletAddress: agent.walletAddress,
-            // Note: promoted flag would need to be determined from promotions service
-            // For now, promotions are merged but not explicitly marked in MCP response
           }));
           
           return {
@@ -967,7 +1117,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                   agents,
                   nextCursor: result.nextCursor,
                   meta: result.meta,
-                  total: result.items.length,
+                  total: filteredItems.length,
                 }, null, 2),
               },
             ],
@@ -977,7 +1127,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             _meta: {
               "openai/outputTemplate": "ui://widget/agents.html",
               "openai/toolInvocation/invoking": "Searching agents...",
-              "openai/toolInvocation/invoked": "Found agents",
+              "openai/toolInvocation/invoked": `Found ${agents.length} agent${agents.length !== 1 ? 's' : ''}`,
             },
           };
         }
@@ -1323,7 +1473,21 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         
         const promotedUrls = result.promotedResourceUrls || new Set<string>();
         
-        const resources = result.items.map(resource => ({
+        // Apply onlyPromoted filter if preference is enabled
+        let filteredItems = result.items;
+        try {
+          const { userId } = await getUserContext(authInfo);
+          const discoveryFilters = await getDiscoveryFilters(userId);
+          if (discoveryFilters.onlyPromoted) {
+            filteredItems = result.items.filter(resource =>
+              promotedUrls.has(resource.resource.toLowerCase())
+            );
+          }
+        } catch (error) {
+          logger.debug("Failed to apply onlyPromoted filter", { error });
+        }
+        
+        const resources = filteredItems.map(resource => ({
           resource: resource.resource,
           type: resource.type,
           lastUpdated: resource.lastUpdated,
@@ -1334,7 +1498,24 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             scheme: accept.scheme,
             maxAmountRequired: accept.maxAmountRequired,
             maxAmountRequiredFormatted: formatAmountDisplay(accept.maxAmountRequired),
+            maxTimeoutSeconds: accept.maxTimeoutSeconds,
+            mimeType: accept.mimeType,
             description: accept.description,
+            payTo: accept.payTo,
+            method: accept.outputSchema?.input?.method || "GET", // HTTP method to use (default: GET)
+            schema: accept.outputSchema ? {
+              input: accept.outputSchema.input ? {
+                type: accept.outputSchema.input.type,
+                method: accept.outputSchema.input.method,
+                bodyType: accept.outputSchema.input.bodyType,
+                bodyFields: accept.outputSchema.input.bodyFields,
+                queryParams: accept.outputSchema.input.queryParams,
+                headerFields: accept.outputSchema.input.headerFields,
+              } : undefined,
+              output: accept.outputSchema.output,
+            } : undefined,
+            extra: accept.extra, // Include extra fields if present
+            channel: accept.channel, // Include channel if present
           })),
           x402Version: resource.x402Version,
         }));
@@ -1352,12 +1533,14 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                     maxAmountRequired: "Raw amount in smallest token unit (string) - use for calculations",
                     maxAmountRequiredFormatted: "Human-readable USDC amount (e.g., '1.0' = 1 USDC) - use for displaying costs to users",
                     network: "Blockchain network - ensure it matches your wallet's network",
-                    scheme: "'erc20' = token payment, 'native' = blockchain currency"
+                    scheme: "'erc20' = token payment, 'native' = blockchain currency",
+                    method: "HTTP method to use when calling this resource (GET, POST, PUT, DELETE, PATCH) - use this with 'make_x402_payment' tool",
+                    schema: "Input/output schema for the resource - use 'schema.input' to determine what parameters (bodyFields, queryParams, headerFields) to send with 'make_x402_payment' tool"
                   }
                 },
                 resources,
                 pagination: {
-                  total: result.total,
+                  total: filteredItems.length,
                   limit: result.limit,
                   offset: result.offset,
                 },
@@ -1531,6 +1714,102 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             {
               type: "text",
               text: `Error fetching payment history: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.SET_PREFERENCES) {
+      try {
+        const validatedArgs = SetPreferencesSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        // Convert human-readable amounts to atomic units
+        const preferencesInput: any = {};
+        
+        if (validatedArgs.perRequestMax !== undefined) {
+          const atomic = parseUSDC(validatedArgs.perRequestMax);
+          if (atomic === null) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Invalid perRequestMax amount: ${validatedArgs.perRequestMax}. Must be a valid USDC amount (e.g., "0.05").`,
+                },
+              ],
+            };
+          }
+          preferencesInput.perRequestMaxAtomic = atomic;
+        }
+        
+        if (validatedArgs.sessionBudget !== undefined) {
+          const atomic = parseUSDC(validatedArgs.sessionBudget);
+          if (atomic === null) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Invalid sessionBudget amount: ${validatedArgs.sessionBudget}. Must be a valid USDC amount (e.g., "5.00").`,
+                },
+              ],
+            };
+          }
+          preferencesInput.sessionBudgetAtomic = atomic;
+        }
+        
+        if (validatedArgs.onlyPromoted !== undefined) {
+          preferencesInput.onlyPromoted = validatedArgs.onlyPromoted;
+        }
+        
+        if (validatedArgs.minAgentScore !== undefined) {
+          preferencesInput.minAgentScore = validatedArgs.minAgentScore;
+        }
+        
+        // Update preferences
+        const updated = await setUserPreferences(userId, preferencesInput);
+        
+        // Get current preferences to return in human-readable format
+        const budgetLimits = await getBudgetLimits(userId);
+        const discoveryFilters = await getDiscoveryFilters(userId);
+        
+        const formatUSDC = (atomic: string | null): string | null => {
+          if (!atomic) return null;
+          return formatTokenAmount(atomic, USDC_DECIMALS);
+        };
+        
+        const response = {
+          success: true,
+          preferences: {
+            budget: {
+              perRequestMax: formatUSDC(budgetLimits.perRequestMaxAtomic),
+              sessionBudget: formatUSDC(budgetLimits.sessionBudgetAtomic),
+            },
+            discovery: {
+              onlyPromoted: discoveryFilters.onlyPromoted,
+              minAgentScore: discoveryFilters.minAgentScore,
+            },
+          },
+        };
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(response, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to set preferences", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error setting preferences: ${(error as Error).message}`,
             },
           ],
         };

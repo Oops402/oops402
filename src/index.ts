@@ -28,6 +28,16 @@ import { getPKPsForAuthMethod, mintPKP, getPkpSessionSigs, PKPAccount, initializ
 import { getBalances, transferToken } from './modules/wallet/chainService.js';
 import { searchAgents, searchAgentsByReputation } from './modules/agents/service.js';
 import { makePayment } from './modules/x402/service.js';
+import {
+  getUserPreferences,
+  setUserPreferences,
+  getBudgetLimits,
+  getDiscoveryFilters,
+  getSessionSpent,
+  addSessionSpent,
+  resetSessionSpent,
+  getRemainingBudget,
+} from './modules/preferences/service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -403,12 +413,315 @@ async function main() {
         }
       });
 
+      // Preferences endpoints
+      app.get('/api/preferences', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const preferences = await getUserPreferences(userId);
+          const budgetLimits = await getBudgetLimits(userId);
+          const discoveryFilters = await getDiscoveryFilters(userId);
+
+          // Format amounts for human-readable display
+          const formatUSDC = (atomic: string | null): string | null => {
+            if (!atomic) return null;
+            const amount = BigInt(atomic);
+            const divisor = BigInt(10 ** 6);
+            const whole = amount / divisor;
+            const remainder = amount % divisor;
+            if (remainder === 0n) {
+              return whole.toString();
+            }
+            const remainderStr = remainder.toString().padStart(6, '0');
+            const trimmed = remainderStr.replace(/0+$/, '');
+            return `${whole}.${trimmed}`;
+          };
+
+          res.json({
+            success: true,
+            preferences: {
+              budget: {
+                perRequestMax: formatUSDC(budgetLimits.perRequestMaxAtomic),
+                sessionBudget: formatUSDC(budgetLimits.sessionBudgetAtomic),
+              },
+              discovery: {
+                onlyPromoted: discoveryFilters.onlyPromoted,
+                minAgentScore: discoveryFilters.minAgentScore,
+              },
+            },
+          });
+        } catch (error) {
+          logger.error('Failed to get preferences', error as Error);
+          res.status(500).json({ error: 'Failed to get preferences', message: (error as Error).message });
+        }
+      });
+
+      app.post('/api/preferences', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { perRequestMax, sessionBudget, onlyPromoted, minAgentScore } = req.body;
+
+          // Parse human-readable amounts to atomic units
+          const parseUSDC = (input: string): string | null => {
+            const sanitized = input.replace(/,/g, "").trim();
+            if (sanitized === "" || !/^\d*(\.\d{0,6})?$/.test(sanitized)) return null;
+            const [whole, fracRaw] = sanitized.split(".");
+            const frac = (fracRaw || "").padEnd(6, "0").slice(0, 6);
+            try {
+              const wholePart = BigInt(whole || "0") * 1000000n;
+              const fracPart = BigInt(frac || "0");
+              return (wholePart + fracPart).toString();
+            } catch {
+              return null;
+            }
+          };
+
+          const preferencesInput: any = {};
+          if (perRequestMax !== undefined) {
+            const atomic = parseUSDC(perRequestMax);
+            if (atomic === null) {
+              return res.status(400).json({ error: `Invalid perRequestMax amount: ${perRequestMax}` });
+            }
+            preferencesInput.perRequestMaxAtomic = atomic;
+          }
+          if (sessionBudget !== undefined) {
+            const atomic = parseUSDC(sessionBudget);
+            if (atomic === null) {
+              return res.status(400).json({ error: `Invalid sessionBudget amount: ${sessionBudget}` });
+            }
+            preferencesInput.sessionBudgetAtomic = atomic;
+          }
+          if (onlyPromoted !== undefined) {
+            preferencesInput.onlyPromoted = onlyPromoted;
+          }
+          if (minAgentScore !== undefined) {
+            if (typeof minAgentScore !== 'number' || minAgentScore < 0 || minAgentScore > 100) {
+              return res.status(400).json({ error: 'minAgentScore must be a number between 0 and 100' });
+            }
+            preferencesInput.minAgentScore = minAgentScore;
+          }
+
+          await setUserPreferences(userId, preferencesInput);
+
+          // Return updated preferences
+          const budgetLimits = await getBudgetLimits(userId);
+          const discoveryFilters = await getDiscoveryFilters(userId);
+
+          const formatUSDC = (atomic: string | null): string | null => {
+            if (!atomic) return null;
+            const amount = BigInt(atomic);
+            const divisor = BigInt(10 ** 6);
+            const whole = amount / divisor;
+            const remainder = amount % divisor;
+            if (remainder === 0n) {
+              return whole.toString();
+            }
+            const remainderStr = remainder.toString().padStart(6, '0');
+            const trimmed = remainderStr.replace(/0+$/, '');
+            return `${whole}.${trimmed}`;
+          };
+
+          res.json({
+            success: true,
+            preferences: {
+              budget: {
+                perRequestMax: formatUSDC(budgetLimits.perRequestMaxAtomic),
+                sessionBudget: formatUSDC(budgetLimits.sessionBudgetAtomic),
+              },
+              discovery: {
+                onlyPromoted: discoveryFilters.onlyPromoted,
+                minAgentScore: discoveryFilters.minAgentScore,
+              },
+            },
+          });
+        } catch (error) {
+          logger.error('Failed to set preferences', error as Error);
+          res.status(500).json({ error: 'Failed to set preferences', message: (error as Error).message });
+        }
+      });
+
+      app.get('/api/preferences/budget', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const budgetLimits = await getBudgetLimits(userId);
+
+          const formatUSDC = (atomic: string | null): string | null => {
+            if (!atomic) return null;
+            const amount = BigInt(atomic);
+            const divisor = BigInt(10 ** 6);
+            const whole = amount / divisor;
+            const remainder = amount % divisor;
+            if (remainder === 0n) {
+              return whole.toString();
+            }
+            const remainderStr = remainder.toString().padStart(6, '0');
+            const trimmed = remainderStr.replace(/0+$/, '');
+            return `${whole}.${trimmed}`;
+          };
+
+          res.json({
+            success: true,
+            budget: {
+              perRequestMax: formatUSDC(budgetLimits.perRequestMaxAtomic),
+              sessionBudget: formatUSDC(budgetLimits.sessionBudgetAtomic),
+            },
+          });
+        } catch (error) {
+          logger.error('Failed to get budget limits', error as Error);
+          res.status(500).json({ error: 'Failed to get budget limits', message: (error as Error).message });
+        }
+      });
+
+      app.get('/api/preferences/discovery', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const discoveryFilters = await getDiscoveryFilters(userId);
+
+          res.json({
+            success: true,
+            discovery: {
+              onlyPromoted: discoveryFilters.onlyPromoted,
+              minAgentScore: discoveryFilters.minAgentScore,
+            },
+          });
+        } catch (error) {
+          logger.error('Failed to get discovery filters', error as Error);
+          res.status(500).json({ error: 'Failed to get discovery filters', message: (error as Error).message });
+        }
+      });
+
+      // Session spending endpoints
+      app.get('/api/session/spent', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const sessionId = req.sessionID;
+          if (!sessionId) {
+            return res.status(400).json({ error: 'Session ID not found' });
+          }
+
+          const spentAtomic = await getSessionSpent(sessionId);
+          
+          // Format for human-readable display
+          const amount = BigInt(spentAtomic);
+          const divisor = BigInt(10 ** 6);
+          const whole = amount / divisor;
+          const remainder = amount % divisor;
+          let spentHuman: string;
+          if (remainder === 0n) {
+            spentHuman = whole.toString();
+          } else {
+            const remainderStr = remainder.toString().padStart(6, '0');
+            const trimmed = remainderStr.replace(/0+$/, '');
+            spentHuman = `${whole}.${trimmed}`;
+          }
+
+          res.json({
+            success: true,
+            spent: spentHuman,
+            spentAtomic,
+          });
+        } catch (error) {
+          logger.error('Failed to get session spending', error as Error);
+          res.status(500).json({ error: 'Failed to get session spending', message: (error as Error).message });
+        }
+      });
+
+      app.post('/api/session/spent', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const sessionId = req.sessionID;
+          if (!sessionId) {
+            return res.status(400).json({ error: 'Session ID not found' });
+          }
+
+          const { amountAtomic } = req.body;
+          if (!amountAtomic || typeof amountAtomic !== 'string') {
+            return res.status(400).json({ error: 'amountAtomic is required and must be a string' });
+          }
+
+          await addSessionSpent(sessionId, amountAtomic);
+
+          const spentAtomic = await getSessionSpent(sessionId);
+          
+          // Format for human-readable display
+          const amount = BigInt(spentAtomic);
+          const divisor = BigInt(10 ** 6);
+          const whole = amount / divisor;
+          const remainder = amount % divisor;
+          let spentHuman: string;
+          if (remainder === 0n) {
+            spentHuman = whole.toString();
+          } else {
+            const remainderStr = remainder.toString().padStart(6, '0');
+            const trimmed = remainderStr.replace(/0+$/, '');
+            spentHuman = `${whole}.${trimmed}`;
+          }
+
+          res.json({
+            success: true,
+            spent: spentHuman,
+            spentAtomic,
+          });
+        } catch (error) {
+          logger.error('Failed to add session spending', error as Error);
+          res.status(500).json({ error: 'Failed to add session spending', message: (error as Error).message });
+        }
+      });
+
+      app.post('/api/session/spent/reset', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const sessionId = req.sessionID;
+          if (!sessionId) {
+            return res.status(400).json({ error: 'Session ID not found' });
+          }
+
+          await resetSessionSpent(sessionId);
+
+          res.json({
+            success: true,
+            spent: '0',
+            spentAtomic: '0',
+          });
+        } catch (error) {
+          logger.error('Failed to reset session spending', error as Error);
+          res.status(500).json({ error: 'Failed to reset session spending', message: (error as Error).message });
+        }
+      });
+
       // Discover bazaar resources
       app.get('/api/discover/bazaar', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
         try {
           const { type, resource, keyword, limit, offset, sortBy } = req.query;
           
-          logger.debug('Discovering bazaar resources', { type, resource, keyword, limit, offset, sortBy });
+          // Normalize keyword: support both single string and comma-separated or array
+          let normalizedKeyword: string | string[] | undefined;
+          if (keyword) {
+            if (Array.isArray(keyword)) {
+              // Already an array
+              normalizedKeyword = keyword as string[];
+            } else if (typeof keyword === 'string' && keyword.includes(',')) {
+              // Comma-separated string - split into array
+              normalizedKeyword = keyword.split(',').map(k => k.trim()).filter(k => k.length > 0);
+            } else {
+              // Single string
+              normalizedKeyword = keyword as string;
+            }
+          }
+          
+          logger.debug('Discovering bazaar resources', { type, resource, keyword: normalizedKeyword, limit, offset, sortBy });
           
           // Get session ID for analytics (hash it for privacy)
           // Use sessionID if available, otherwise use userId + timestamp as fallback
@@ -475,10 +788,26 @@ async function main() {
           
           const promotedUrls = result.promotedResourceUrls || new Set<string>();
           
+          // Apply onlyPromoted filter if preference is enabled
+          let filteredItems = result.items;
+          const userId = getUserId(req);
+          if (userId) {
+            try {
+              const discoveryFilters = await getDiscoveryFilters(userId);
+              if (discoveryFilters.onlyPromoted) {
+                filteredItems = result.items.filter(resource =>
+                  promotedUrls.has(resource.resource.toLowerCase())
+                );
+              }
+            } catch (error) {
+              logger.debug('Failed to get discovery filters, skipping filter', { error });
+            }
+          }
+          
           res.json({
             success: true,
             x402Version: 1,
-            items: result.items.map(resource => ({
+            items: filteredItems.map(resource => ({
               resource: resource.resource,
               type: resource.type,
               lastUpdated: resource.lastUpdated,
@@ -498,7 +827,7 @@ async function main() {
               x402Version: resource.x402Version,
             })),
             pagination: {
-              total: result.total,
+              total: filteredItems.length,
               limit: result.limit,
               offset: result.offset,
             },
@@ -567,12 +896,53 @@ async function main() {
               reputationParams.sort = Array.isArray(sort) ? sort : [sort as string];
             }
             
+            // Apply user preferences
+            const userId = getUserId(req);
+            if (userId) {
+              try {
+                const discoveryFilters = await getDiscoveryFilters(userId);
+                // Apply minAgentScore to reputation search if not already set
+                if (discoveryFilters.minAgentScore !== null && reputationParams.minAverageScore === undefined) {
+                  reputationParams.minAverageScore = discoveryFilters.minAgentScore;
+                }
+              } catch (error) {
+                logger.debug('Failed to get discovery filters, skipping filter', { error });
+              }
+            }
+            
             logger.debug('Discovering agents by reputation', reputationParams);
             const result = await searchAgentsByReputation(reputationParams);
             
+            // Get promoted agent IDs for marking and filtering
+            const { getActivePromotions } = await import('./modules/promotions/service.js');
+            const activePromotions = await getActivePromotions({
+              resourceType: 'agent',
+            });
+            const promotedAgentIds = new Set<string>();
+            for (const promotion of activePromotions) {
+              if (promotion.agent_id) {
+                promotedAgentIds.add(promotion.agent_id.toLowerCase());
+              }
+            }
+            
+            // Apply onlyPromoted filter if preference is enabled
+            let filteredItems = result.items;
+            if (userId) {
+              try {
+                const discoveryFilters = await getDiscoveryFilters(userId);
+                if (discoveryFilters.onlyPromoted) {
+                  filteredItems = result.items.filter(agent =>
+                    promotedAgentIds.has(agent.agentId.toLowerCase())
+                  );
+                }
+              } catch (error) {
+                logger.debug('Failed to apply onlyPromoted filter', { error });
+              }
+            }
+            
             res.json({
               success: true,
-              items: result.items.map(agent => ({
+              items: filteredItems.map(agent => ({
                 agentId: agent.agentId,
                 chainId: agent.chainId,
                 name: agent.name,
@@ -585,6 +955,7 @@ async function main() {
                 operators: agent.operators,
                 walletAddress: agent.walletAddress,
                 averageScore: (agent as any).extras?.averageScore,
+                promoted: promotedAgentIds.has(agent.agentId.toLowerCase()),
               })),
               nextCursor: result.nextCursor,
               meta: result.meta,
@@ -659,13 +1030,47 @@ async function main() {
           
           const result = await searchAgents(searchParams, sessionIdHash);
           
+          // Get promoted agent IDs for marking and filtering
+          const { getActivePromotions } = await import('./modules/promotions/service.js');
+          const activePromotions = await getActivePromotions({
+            resourceType: 'agent',
+            keyword: name as string | undefined,
+          });
+          const promotedAgentIds = new Set<string>();
+          for (const promotion of activePromotions) {
+            if (promotion.agent_id) {
+              promotedAgentIds.add(promotion.agent_id.toLowerCase());
+            }
+          }
+          
+          // Apply user preferences filters
+          const userId = getUserId(req);
+          let filteredItems = result.items;
+          if (userId) {
+            try {
+              const discoveryFilters = await getDiscoveryFilters(userId);
+              
+              // Apply onlyPromoted filter
+              if (discoveryFilters.onlyPromoted) {
+                filteredItems = result.items.filter(agent =>
+                  promotedAgentIds.has(agent.agentId.toLowerCase())
+                );
+              }
+              
+              // Note: minAgentScore is primarily for reputation search
+              // For regular search, we don't have score data, so we skip this filter
+            } catch (error) {
+              logger.debug('Failed to apply discovery filters', { error });
+            }
+          }
+          
           // Track search analytics (async, don't block)
           if (sessionIdHash && (name || Object.keys(searchParams).length > 1)) {
             const { trackSearch } = await import('./modules/analytics/service.js');
             const searchKeyword = name as string || 'agents';
             trackSearch({
               keyword: searchKeyword,
-              result_count: result.items.length,
+              result_count: filteredItems.length,
               session_id_hash: sessionIdHash,
             }).catch((err) => {
               logger.error('Failed to track agent search', err as Error);
@@ -674,7 +1079,7 @@ async function main() {
           
           res.json({
             success: true,
-              items: result.items.map(agent => ({
+              items: filteredItems.map(agent => ({
               agentId: agent.agentId,
                 chainId: agent.chainId,
               name: agent.name,
@@ -686,6 +1091,7 @@ async function main() {
                 owners: agent.owners,
                 operators: agent.operators,
                 walletAddress: agent.walletAddress,
+                promoted: promotedAgentIds.has(agent.agentId.toLowerCase()),
             })),
             nextCursor: result.nextCursor,
               meta: result.meta,

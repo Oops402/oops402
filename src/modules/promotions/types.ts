@@ -15,6 +15,7 @@ export interface Promotion {
   payment_amount: string;
   payment_tx_hash: string;
   resource_type?: 'bazaar' | 'agent';
+  description?: string; // Description extracted from x402 schema accepts (for keyword search)
   created_at: string;
   updated_at: string;
 }
@@ -30,7 +31,7 @@ export interface CreatePromotionParams {
 
 export interface GetActivePromotionsParams {
   resourceType?: string;
-  keyword?: string;
+  keyword?: string | string[]; // Support both single keyword and multiple keywords (AND logic)
   resourceUrl?: string;
   agentId?: string;
 }

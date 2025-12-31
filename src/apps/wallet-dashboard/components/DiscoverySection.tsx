@@ -194,14 +194,16 @@ export function DiscoverySection({ onPay, onOpenDirectCaller }: DiscoverySection
                   {item.accepts[0] && (
                     <span style={styles.badge}>{item.accepts[0].network.toUpperCase()}</span>
                   )}
-                  <button
-                    onClick={() => setPromoteModal({ resourceUrl: item.resource, resourceType: 'bazaar' })}
-                    style={styles.buttonSecondary}
-                    className="button-secondary"
-                    title="Promote this resource"
-                  >
-                    Promote
-                  </button>
+                  {!item.promoted && (
+                    <button
+                      onClick={() => setPromoteModal({ resourceUrl: item.resource, resourceType: 'bazaar' })}
+                      style={styles.buttonSecondary}
+                      className="button-secondary"
+                      title="Promote this resource"
+                    >
+                      Promote
+                    </button>
+                  )}
                   <button
                     onClick={() => toggleExpand(item.resource)}
                     style={styles.iconButton}

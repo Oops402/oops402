@@ -327,20 +327,27 @@ export function AgentSearchSection({ onAgentSelect }: AgentSearchSectionProps) {
                   )}
                 </div>
                 <div style={styles.discoveryCardActions}>
+                  {agent.promoted && (
+                    <span style={{ ...styles.badge, backgroundColor: "#ffd700", color: "#000" }}>
+                      PROMOTED
+                    </span>
+                  )}
                   <span style={styles.badge}>{agent.active ? "ACTIVE" : "INACTIVE"}</span>
                   <span style={styles.badge}>Chain {agent.chainId}</span>
-                  <button
-                    onClick={() => setPromoteModal({ 
-                      resourceUrl: agent.agentId, 
-                      resourceType: 'agent',
-                      agentId: agent.agentId,
-                    })}
-                    style={styles.buttonSecondary}
-                    className="button-secondary"
-                    title="Promote this agent"
-                  >
-                    Promote
-                  </button>
+                  {!agent.promoted && (
+                    <button
+                      onClick={() => setPromoteModal({ 
+                        resourceUrl: agent.agentId, 
+                        resourceType: 'agent',
+                        agentId: agent.agentId,
+                      })}
+                      style={styles.buttonSecondary}
+                      className="button-secondary"
+                      title="Promote this agent"
+                    >
+                      Promote
+                    </button>
+                  )}
                   <button
                     onClick={() => toggleExpand(`${agent.chainId}-${agent.agentId}`)}
                     style={styles.iconButton}

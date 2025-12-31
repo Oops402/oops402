@@ -93,8 +93,8 @@ export interface QueryCachedResourcesParams {
   type?: string;
   /** Filter by resource URL substring */
   resource?: string;
-  /** Search keyword - matches resource URL or description */
-  keyword?: string;
+  /** Search keyword(s) - matches resource URL or description. Can be a single string or array of strings. All keywords must match (AND logic). */
+  keyword?: string | string[];
   /** Maximum number of results to return */
   limit?: number;
   /** Offset for pagination */
@@ -197,14 +197,14 @@ async function listDiscoveryResources(
 }
 
 /**
- * Crawl all resources from the discovery API and save to cache file
+ * Crawl all resources from the discovery API and save to Supabase database
  * Paginates through all pages to collect all resources
+ * Uses upsert logic to prevent duplicates
  */
 export async function crawlAllResources(): Promise<void> {
-  const cacheFile = config.bazaar.cacheFile;
   const facilitatorUrl = config.bazaar.facilitatorUrl;
 
-  logger.info('Starting bazaar resources crawl', { facilitatorUrl, cacheFile });
+  logger.info('Starting bazaar resources crawl', { facilitatorUrl });
 
   try {
     const allResources: DiscoveryResource[] = [];
@@ -287,30 +287,60 @@ export async function crawlAllResources(): Promise<void> {
       }
     }
 
-    // Ensure cache directory exists
-    const cacheDir = path.dirname(cacheFile);
-    await fs.mkdir(cacheDir, { recursive: true });
-
-    // Save to JSON file (even if partial)
-    const cacheData = {
-      resources: allResources,
-      total: allResources.length,
-      crawledAt: new Date().toISOString(),
-      facilitatorUrl,
-      partial: allResources.length < total,
-    };
-
-    await fs.writeFile(cacheFile, JSON.stringify(cacheData, null, 2), 'utf-8');
+    // Save to Supabase database using upsert logic
+    const { upsertBazaarResource } = await import('./bazaarDbService.js');
+    
+    let savedCount = 0;
+    let errorCount = 0;
+    
+    for (const resource of allResources) {
+      try {
+        // Only update resources with source='bazaar' (don't overwrite promoted resources)
+        // Check if resource exists and has source='promotion' - if so, skip it
+        const { findBazaarResourceByUrl } = await import('./bazaarDbService.js');
+        const existing = await findBazaarResourceByUrl(resource.resource);
+        
+        if (existing) {
+          // Check if it's a promoted resource - if so, skip updating it
+          const { supabase: dbSupabase } = await import('./bazaarDbService.js');
+          const { data } = await dbSupabase
+            .from('oops402_bazaar_resources')
+            .select('source')
+            .eq('resource_url', resource.resource)
+            .single();
+          
+          if (data?.source === 'promotion') {
+            logger.debug('Skipping update of promoted resource', {
+              resourceUrl: resource.resource,
+            });
+            continue;
+          }
+        }
+        
+        await upsertBazaarResource(resource, 'bazaar');
+        savedCount++;
+        
+        // Log progress every 100 resources
+        if (savedCount % 100 === 0) {
+          logger.info(`Crawl progress: ${savedCount}/${allResources.length} resources saved to database`);
+        }
+      } catch (error) {
+        errorCount++;
+        logger.error('Failed to save resource to database', error as Error, {
+          resourceUrl: resource.resource,
+        });
+      }
+    }
 
     logger.info('Bazaar resources crawl completed', {
       totalResources: allResources.length,
-      cacheFile,
+      saved: savedCount,
+      errors: errorCount,
       partial: allResources.length < total,
     });
   } catch (error) {
     logger.error('Failed to crawl bazaar resources', error as Error, {
       facilitatorUrl,
-      cacheFile,
     });
     throw error;
   }
@@ -358,29 +388,62 @@ export async function findResourcesByPayTo(
   payToAddress: string
 ): Promise<DiscoveryResource[]> {
   try {
-    const allResources = await loadCachedResources();
-    const payToLower = payToAddress.toLowerCase();
-    
-    return allResources.filter((resource) =>
-      resource.accepts.some(
-        (accept) => accept.payTo?.toLowerCase() === payToLower
-      )
-    );
+    // Try to use database service first
+    const { findBazaarResourcesByPayTo } = await import('./bazaarDbService.js');
+    return await findBazaarResourcesByPayTo(payToAddress);
   } catch (error) {
-    logger.error('Failed to find resources by payTo', error as Error, {
-      payToAddress,
+    // Fallback to loading all resources and filtering
+    logger.warning('Failed to find resources by payTo in database, using fallback', {
+      error: (error as Error).message,
     });
-    return [];
+    
+    try {
+      const allResources = await loadCachedResources();
+      const payToLower = payToAddress.toLowerCase();
+      
+      return allResources.filter((resource) =>
+        resource.accepts.some(
+          (accept) => accept.payTo?.toLowerCase() === payToLower
+        )
+      );
+    } catch (fallbackError) {
+      logger.error('Failed to find resources by payTo', fallbackError as Error, {
+        payToAddress,
+      });
+      return [];
+    }
   }
 }
 
 /**
  * Query cached resources with filtering and pagination
  * Includes promotion merging - promoted results appear first
+ * Uses Supabase database with fallback to JSON file
  */
 export async function queryCachedResources(
   params: QueryCachedResourcesParams = {},
   sessionIdHash?: string // For tracking impressions
+): Promise<QueryCachedResourcesResult> {
+  try {
+    // Try to use database service first
+    const { queryBazaarResources } = await import('./bazaarDbService.js');
+    return await queryBazaarResources(params, sessionIdHash);
+  } catch (error) {
+    // Fallback to original implementation using JSON file
+    logger.warning('Failed to query database, falling back to JSON file', {
+      error: (error as Error).message,
+    });
+    
+    return await queryCachedResourcesFallback(params, sessionIdHash);
+  }
+}
+
+/**
+ * Fallback implementation using JSON file (for migration period)
+ */
+async function queryCachedResourcesFallback(
+  params: QueryCachedResourcesParams = {},
+  sessionIdHash?: string
 ): Promise<QueryCachedResourcesResult> {
   const limit = params.limit ?? 50;
   const offset = params.offset ?? 0;
@@ -389,15 +452,14 @@ export async function queryCachedResources(
     const allResources = await loadCachedResources();
 
     // Fetch active promotions for bazaar resources
-    // Note: We fetch ALL active promotions, not filtered by keyword, because
-    // we need to check if any of the filtered resources match those promotions.
-    // The keyword filtering should only apply to resources, not to promotions.
+    // When keyword is provided, also filter promotions by keyword to include
+    // promoted resources that aren't in the cache
     const { getActivePromotions } = await import('../promotions/service.js');
     const { trackPromotedImpression } = await import('../analytics/service.js');
     
     const activePromotions = await getActivePromotions({
       resourceType: 'bazaar',
-      // Don't filter by keyword here - we'll check promotion status after filtering resources
+      keyword: params.keyword, // Filter promotions by keyword if provided
       resourceUrl: params.resource, // Only filter by exact resource URL if provided
     });
 
@@ -407,12 +469,76 @@ export async function queryCachedResources(
       promotedResourceMap.set(promotion.resource_url.toLowerCase(), promotion.id);
     }
 
+    // Create a set of cached resource URLs for quick lookup
+    const cachedResourceUrls = new Set<string>();
+    for (const resource of allResources) {
+      cachedResourceUrls.add(resource.resource.toLowerCase());
+    }
+
+    // For promoted resources that match the keyword but aren't in cache,
+    // fetch their schema and create DiscoveryResource objects
+    // Note: activePromotions are already filtered by keyword (including description)
+    // via getActivePromotions, so we just need to check if they're not in cache
+    const promotedResourcesNotInCache: DiscoveryResource[] = [];
+    if (params.keyword) {
+      for (const promotion of activePromotions) {
+        const resourceUrlLower = promotion.resource_url.toLowerCase();
+        // Check if this promoted resource isn't in cache
+        // (keyword matching already done by getActivePromotions)
+        if (!cachedResourceUrls.has(resourceUrlLower)) {
+          try {
+            // Fetch the x402 schema for this resource
+            // Try both GET and POST methods (similar to promotion validation)
+            const { validateX402Resource } = await import('../x402/schemaValidation.js');
+            const methods = ['GET', 'POST'];
+            let validation = null;
+            
+            for (const method of methods) {
+              try {
+                validation = await validateX402Resource(promotion.resource_url, method);
+                if (validation.hasX402Schema && validation.schema) {
+                  break; // Found valid schema, stop trying other methods
+                }
+              } catch (methodError) {
+                // Try next method if this one fails
+                continue;
+              }
+            }
+            
+            if (validation && validation.hasX402Schema && validation.schema) {
+              // Create a DiscoveryResource from the schema
+              const schema = validation.schema;
+              const discoveryResource: DiscoveryResource = {
+                resource: promotion.resource_url,
+                type: schema.type || 'http',
+                accepts: schema.accepts || [],
+                lastUpdated: new Date().toISOString(),
+                x402Version: schema.x402Version || 1,
+              };
+              promotedResourcesNotInCache.push(discoveryResource);
+            }
+          } catch (error) {
+            logger.debug('Failed to fetch schema for promoted resource', {
+              resourceUrl: promotion.resource_url,
+              error: (error as Error).message,
+            });
+            // Continue with other promotions even if one fails
+          }
+        }
+      }
+    }
+
     // Track impressions for promoted resources (if sessionIdHash provided)
+    // Use first keyword for tracking if array, or the string itself
+    const keywordForTracking = params.keyword 
+      ? (Array.isArray(params.keyword) ? params.keyword[0] : params.keyword)
+      : undefined;
+    
     if (sessionIdHash) {
       for (const promotion of activePromotions) {
         trackPromotedImpression({
           promotion_id: promotion.id,
-          search_keyword: params.keyword || undefined,
+          search_keyword: keywordForTracking,
           session_id_hash: sessionIdHash,
         }).catch((err) => {
           logger.error('Failed to track promotion impression', err as Error);
@@ -435,16 +561,23 @@ export async function queryCachedResources(
     }
 
     if (params.keyword) {
-      const keywordLower = params.keyword.toLowerCase();
+      // Normalize to array: convert single string to array
+      const keywords = Array.isArray(params.keyword) ? params.keyword : [params.keyword];
+      const keywordsLower = keywords.map(k => k.toLowerCase());
+      
       filtered = filtered.filter((r) => {
-        // Search in resource URL
-        const matchesResource = r.resource.toLowerCase().includes(keywordLower);
-        // Search in description fields of accepts
-        const matchesDescription = r.accepts.some(
-          (accept) =>
-            accept.description?.toLowerCase().includes(keywordLower)
-        );
-        return matchesResource || matchesDescription;
+        // Check if ALL keywords match (AND logic)
+        return keywordsLower.every((keywordLower) => {
+          // Search in resource URL
+          const matchesResource = r.resource.toLowerCase().includes(keywordLower);
+          // Search in description fields of accepts
+          const matchesDescription = r.accepts.some(
+            (accept) =>
+              accept.description?.toLowerCase().includes(keywordLower)
+          );
+          // At least one of these must match for this keyword
+          return matchesResource || matchesDescription;
+        });
       });
     }
 
@@ -478,15 +611,26 @@ export async function queryCachedResources(
     const organic: DiscoveryResource[] = [];
     const promotedUrls = new Set<string>();
 
+    // Add promoted resources that aren't in cache first (these are already filtered by keyword)
+    for (const resource of promotedResourcesNotInCache) {
+      const resourceUrlLower = resource.resource.toLowerCase();
+      promoted.push(resource);
+      promotedUrls.add(resourceUrlLower);
+    }
+
+    // Process cached resources
     for (const resource of filtered) {
       const resourceUrlLower = resource.resource.toLowerCase();
       if (promotedResourceMap.has(resourceUrlLower)) {
         // Mark as promoted (add to promoted array)
-        promoted.push({
-          ...resource,
-          // We'll mark promoted in the result by checking if it's in the promoted array
-        });
-        promotedUrls.add(resourceUrlLower);
+        // Skip if already added from promotedResourcesNotInCache
+        if (!promotedUrls.has(resourceUrlLower)) {
+          promoted.push({
+            ...resource,
+            // We'll mark promoted in the result by checking if it's in the promoted array
+          });
+          promotedUrls.add(resourceUrlLower);
+        }
       } else {
         organic.push(resource);
       }

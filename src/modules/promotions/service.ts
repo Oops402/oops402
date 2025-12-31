@@ -21,11 +21,37 @@ const supabase = getSupabaseClient();
  * Create a new promotion
  */
 export async function createPromotion(params: CreatePromotionParams): Promise<Promotion> {
-  // Validate that the resource is a valid x402 resource
-  const validation = await validateX402Resource(params.resourceUrl);
+  // Validate that the resource is a valid x402 resource (check both GET and POST methods)
+  const methods = ['GET', 'POST'];
+  const validations = await Promise.all(
+    methods.map(method => validateX402Resource(params.resourceUrl, method))
+  );
+
+  // Resource is valid if at least one method returns a valid schema
+  const hasValidSchema = validations.some(validation => validation.hasX402Schema);
   
-  if (!validation.hasX402Schema) {
-    throw new Error('Resource does not have a valid x402 schema');
+  if (!hasValidSchema) {
+    throw new Error('Resource does not have a valid x402 schema for GET or POST methods');
+  }
+
+  // Extract description and full schema from the first valid schema
+  // Combine descriptions from all accepts to create a searchable description
+  let extractedDescription: string | undefined;
+  let fullSchema: any = null;
+  for (const validation of validations) {
+    if (validation.hasX402Schema && validation.schema) {
+      fullSchema = validation.schema;
+      const accepts = Array.isArray(validation.schema.accepts) ? validation.schema.accepts : [];
+      const descriptions = accepts
+        .map((accept: any) => accept.description)
+        .filter((desc: any): desc is string => typeof desc === 'string' && desc.trim().length > 0);
+      
+      if (descriptions.length > 0) {
+        // Combine all descriptions into one searchable string
+        extractedDescription = descriptions.join(' ');
+        break; // Use the first valid schema's descriptions
+      }
+    }
   }
 
   // Check for existing active promotion for this resource
@@ -98,6 +124,10 @@ export async function createPromotion(params: CreatePromotionParams): Promise<Pr
     promotionData.agent_id = params.agentId;
   }
 
+  if (extractedDescription) {
+    promotionData.description = extractedDescription;
+  }
+
   const { data: promotion, error } = await supabase
     .from('oops402_promotions')
     .insert(promotionData)
@@ -113,6 +143,33 @@ export async function createPromotion(params: CreatePromotionParams): Promise<Pr
   }
 
   logger.info('Promotion created', { promotion_id: promotion.id, resource_url: params.resourceUrl });
+
+  // Store full x402 schema in bazaar_resources table if we have a valid schema
+  if (fullSchema && fullSchema.accepts) {
+    try {
+      const { upsertBazaarResource } = await import('../x402/bazaarDbService.js');
+      const discoveryResource = {
+        resource: params.resourceUrl,
+        type: fullSchema.type || 'http',
+        accepts: Array.isArray(fullSchema.accepts) ? fullSchema.accepts : [],
+        lastUpdated: new Date().toISOString(),
+        x402Version: fullSchema.x402Version || 1,
+      };
+      
+      await upsertBazaarResource(discoveryResource, 'promotion', promotion.id);
+      logger.info('Stored full schema in bazaar_resources', {
+        promotion_id: promotion.id,
+        resource_url: params.resourceUrl,
+      });
+    } catch (error) {
+      // Log error but don't fail promotion creation if schema storage fails
+      logger.error('Failed to store full schema in bazaar_resources', error as Error, {
+        promotion_id: promotion.id,
+        resource_url: params.resourceUrl,
+      });
+    }
+  }
+
   return promotion as Promotion;
 }
 
@@ -150,14 +207,24 @@ export async function getActivePromotions(
     if (error) throw error;
 
     // Filter by keyword if provided (client-side filtering for flexibility)
+    // Supports both single keyword (string) and multiple keywords (array)
+    // All keywords must match (AND logic)
     let filtered = promotions || [];
     if (params.keyword) {
-      const keywordLower = params.keyword.toLowerCase();
-      filtered = filtered.filter(
-        (p) =>
-          p.resource_url.toLowerCase().includes(keywordLower) ||
-          (p.agent_id && p.agent_id.toLowerCase().includes(keywordLower))
-      );
+      // Normalize to array: convert single string to array
+      const keywords = Array.isArray(params.keyword) ? params.keyword : [params.keyword];
+      const keywordsLower = keywords.map(k => k.toLowerCase());
+      
+      filtered = filtered.filter((p) => {
+        // Check if ALL keywords match (AND logic)
+        return keywordsLower.every((keywordLower) => {
+          return (
+            p.resource_url.toLowerCase().includes(keywordLower) ||
+            (p.agent_id && p.agent_id.toLowerCase().includes(keywordLower)) ||
+            (p.description && p.description.toLowerCase().includes(keywordLower))
+          );
+        });
+      });
     }
 
     // Filter out expired promotions (end_date check)

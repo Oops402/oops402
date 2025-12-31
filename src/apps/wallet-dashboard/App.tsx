@@ -9,6 +9,7 @@ import { WalletCard } from "./components/WalletCard";
 import { TransferModal } from "./components/TransferModal";
 import { ReceiveModal } from "./components/ReceiveModal";
 import { PaymentModal } from "./components/PaymentModal";
+import { BudgetModal } from "./components/BudgetModal";
 import { DiscoverySection } from "./components/DiscoverySection";
 import { AgentSearchSection } from "./components/AgentSearchSection";
 import { DirectX402Caller } from "./components/DirectX402Caller";
@@ -45,6 +46,7 @@ function WalletDashboard() {
   const [activeTab, setActiveTab] = useState<"wallet" | "discovery" | "agents" | "analytics">("wallet");
   const [directCallerModalOpen, setDirectCallerModalOpen] = useState(false);
   const [mcpConnectionModalOpen, setMcpConnectionModalOpen] = useState(false);
+  const [budgetModalOpen, setBudgetModalOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     // Check localStorage or system preference
     const saved = localStorage.getItem("darkMode");
@@ -402,6 +404,7 @@ function WalletDashboard() {
                 tokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
               })}
               onReceive={() => setReceiveModal({ address: wallet.address })}
+              onBudget={() => setBudgetModalOpen(true)}
             />
           ) : (
             <div style={styles.emptyCard}>
@@ -410,12 +413,13 @@ function WalletDashboard() {
               <p style={styles.emptyText}>Your wallet is being created or loaded.</p>
             </div>
           )}
-
-          {/* spacer for visual separation */}
-          <div style={{ height: 20 }} />
-
-          {wallet && <PaymentHistory walletAddress={wallet.address} />}
         </div>
+
+        {wallet && (
+          <div style={styles.section}>
+            <PaymentHistory walletAddress={wallet.address} />
+          </div>
+        )}
       </div>
 
       <div style={activeTab === "discovery" ? styles.tabContent : styles.tabContentHidden}>
@@ -483,6 +487,11 @@ function WalletDashboard() {
       <McpConnectionModal
         isOpen={mcpConnectionModalOpen}
         onClose={() => setMcpConnectionModalOpen(false)}
+      />
+
+      <BudgetModal
+        isOpen={budgetModalOpen}
+        onClose={() => setBudgetModalOpen(false)}
       />
     </div>
   );

@@ -1,5 +1,11 @@
 -- x402 Promotion & Analytics System Schema
 -- All tables use oops402_ prefix to avoid conflicts with existing tables
+--
+-- Migration note: If upgrading an existing database, run:
+--   ALTER TABLE oops402_promotions ADD COLUMN IF NOT EXISTS description TEXT;
+--   CREATE INDEX IF NOT EXISTS idx_promotions_description ON oops402_promotions(description) WHERE description IS NOT NULL;
+--   -- For bazaar resources migration:
+--   -- See oops402_bazaar_resources table definition below
 
 -- Promotions table - stores active and inactive promotions
 CREATE TABLE IF NOT EXISTS oops402_promotions (
@@ -13,6 +19,7 @@ CREATE TABLE IF NOT EXISTS oops402_promotions (
   payment_amount TEXT NOT NULL, -- Payment amount for promotion (as string to handle large numbers)
   payment_tx_hash TEXT NOT NULL, -- Transaction hash of promotion payment
   resource_type TEXT, -- 'bazaar' or 'agent'
+  description TEXT, -- Description extracted from x402 schema accepts (for keyword search)
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   -- Note: Unique constraints with WHERE clauses are created as partial unique indexes below
@@ -78,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_promotions_agent_id ON oops402_promotions(agent_i
 CREATE INDEX IF NOT EXISTS idx_promotions_status ON oops402_promotions(status);
 CREATE INDEX IF NOT EXISTS idx_promotions_active ON oops402_promotions(status, start_date, end_date) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_promotions_wallet ON oops402_promotions(promoted_by_wallet);
+CREATE INDEX IF NOT EXISTS idx_promotions_description ON oops402_promotions(description) WHERE description IS NOT NULL;
 
 -- Enforce "only one active promotion per resource_url" using partial unique index
 CREATE UNIQUE INDEX IF NOT EXISTS unique_active_promotion
@@ -122,5 +130,50 @@ $$ language 'plpgsql';
 
 -- Trigger for updated_at on promotions
 CREATE TRIGGER update_promotions_updated_at BEFORE UPDATE ON oops402_promotions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- User preferences table - stores user preferences for budget limits and discovery filters
+CREATE TABLE IF NOT EXISTS oops402_user_preferences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL UNIQUE, -- Auth0 user ID (sub claim)
+  per_request_max_atomic TEXT, -- Max per request in atomic units (nullable)
+  session_budget_atomic TEXT, -- Session budget in atomic units (nullable)
+  only_promoted BOOLEAN NOT NULL DEFAULT false, -- Only show promoted resources/agents
+  min_agent_score NUMERIC(5,2), -- Minimum average score for agents (0-100, nullable)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON oops402_user_preferences(user_id);
+
+-- Trigger for updated_at on user preferences
+CREATE TRIGGER update_user_preferences_updated_at BEFORE UPDATE ON oops402_user_preferences
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Bazaar resources table - stores all x402-protected resources (both crawled from bazaar and manually promoted)
+CREATE TABLE IF NOT EXISTS oops402_bazaar_resources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  resource_url TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL, -- 'http', 'mcp', etc.
+  accepts JSONB NOT NULL, -- Full accepts array with all payment options
+  last_updated TIMESTAMPTZ NOT NULL,
+  x402_version INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'bazaar', -- 'bazaar' (crawled) or 'promotion' (manually added)
+  promotion_id UUID REFERENCES oops402_promotions(id) ON DELETE SET NULL, -- Link to promotion if manually added
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_bazaar_resources_resource_url ON oops402_bazaar_resources(resource_url);
+CREATE INDEX IF NOT EXISTS idx_bazaar_resources_type ON oops402_bazaar_resources(type);
+CREATE INDEX IF NOT EXISTS idx_bazaar_resources_source ON oops402_bazaar_resources(source);
+CREATE INDEX IF NOT EXISTS idx_bazaar_resources_promotion_id ON oops402_bazaar_resources(promotion_id) WHERE promotion_id IS NOT NULL;
+
+-- Full-text search on accepts descriptions (for keyword search)
+CREATE INDEX IF NOT EXISTS idx_bazaar_resources_accepts_gin ON oops402_bazaar_resources USING gin(accepts jsonb_path_ops);
+
+-- Trigger for updated_at on bazaar resources
+CREATE TRIGGER update_bazaar_resources_updated_at BEFORE UPDATE ON oops402_bazaar_resources
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
