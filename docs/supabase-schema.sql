@@ -177,3 +177,75 @@ CREATE INDEX IF NOT EXISTS idx_bazaar_resources_accepts_gin ON oops402_bazaar_re
 CREATE TRIGGER update_bazaar_resources_updated_at BEFORE UPDATE ON oops402_bazaar_resources
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- ============================================================================
+-- Plan + Execution API Schema
+-- ============================================================================
+
+-- Plans table - stores execution plans with steps, budgets, and tool allowlists
+CREATE TABLE IF NOT EXISTS oops402_plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id TEXT NOT NULL, -- Auth0 user ID (sub claim)
+  workspace_id TEXT, -- Optional workspace (for future multi-user plans)
+  title TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft, approved, running, paused, completed, canceled, failed
+  spec JSONB NOT NULL, -- Full plan specification (steps, budget, tool_policy, scope)
+  plan_hash TEXT, -- SHA256 hash of canonicalized spec (set on approval, nullable)
+  execution JSONB NOT NULL DEFAULT '{"active_step_id": null, "progress": {"completed_steps": [], "failed_steps": []}, "spend": {"total_usdc": "0.00", "remaining_usdc": null}}'::jsonb, -- Current execution state
+  integrity JSONB NOT NULL DEFAULT '{"approved_at": null, "approved_by": null}'::jsonb, -- Approval metadata
+  tags TEXT[] DEFAULT ARRAY[]::TEXT[], -- Array of tags
+  metadata JSONB DEFAULT '{}'::jsonb, -- Additional metadata
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Plan receipts table - append-only receipts for tracking payments
+CREATE TABLE IF NOT EXISTS oops402_plan_receipts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id UUID NOT NULL REFERENCES oops402_plans(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL, -- Step identifier from plan
+  tool JSONB NOT NULL, -- Tool details (method, url)
+  cost JSONB NOT NULL, -- Cost details (currency, amount)
+  x402 JSONB NOT NULL, -- x402 payment reference (includes payment_reference for deduplication)
+  output JSONB, -- Output summary/reference
+  notes TEXT, -- Optional notes
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Plan deliverables table - stores deliverables with IPFS CIDs
+CREATE TABLE IF NOT EXISTS oops402_plan_deliverables (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id UUID NOT NULL REFERENCES oops402_plans(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, -- report, screenshot, dataset, etc.
+  title TEXT NOT NULL,
+  storage JSONB NOT NULL, -- Storage details (kind: "ipfs", cid, gateway_url)
+  evidence JSONB, -- Screenshots, sources (nullable)
+  checksum TEXT, -- Optional checksum
+  metadata JSONB DEFAULT '{}'::jsonb, -- Additional metadata
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for plans table
+CREATE INDEX IF NOT EXISTS idx_plans_owner_id ON oops402_plans(owner_id);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON oops402_plans(status);
+CREATE INDEX IF NOT EXISTS idx_plans_workspace_id ON oops402_plans(workspace_id) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_plans_created_at ON oops402_plans(created_at);
+CREATE INDEX IF NOT EXISTS idx_plans_tags ON oops402_plans USING gin(tags);
+
+-- Indexes for plan receipts table
+CREATE INDEX IF NOT EXISTS idx_plan_receipts_plan_id ON oops402_plan_receipts(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_receipts_created_at ON oops402_plan_receipts(created_at);
+CREATE INDEX IF NOT EXISTS idx_plan_receipts_step_id ON oops402_plan_receipts(step_id);
+
+-- Indexes for plan deliverables table
+CREATE INDEX IF NOT EXISTS idx_plan_deliverables_plan_id ON oops402_plan_deliverables(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_deliverables_type ON oops402_plan_deliverables(type);
+CREATE INDEX IF NOT EXISTS idx_plan_deliverables_created_at ON oops402_plan_deliverables(created_at);
+-- Unique index prevents duplicate receipts for same payment (natural idempotency)
+-- Note: Using unique index instead of constraint because we need to extract from JSONB
+CREATE UNIQUE INDEX IF NOT EXISTS unique_plan_receipt 
+  ON oops402_plan_receipts(plan_id, step_id, (x402->>'payment_reference'))
+  WHERE x402->>'payment_reference' IS NOT NULL;
+-- Trigger for updated_at on plans
+CREATE TRIGGER update_plans_updated_at BEFORE UPDATE ON oops402_plans
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -16,6 +16,8 @@ import { DirectX402Caller } from "./components/DirectX402Caller";
 import { McpConnectionModal } from "./components/McpConnectionModal";
 import { PaymentHistory } from "./components/PaymentHistory";
 import { AnalyticsSection } from "./components/AnalyticsSection";
+import { PlansSection } from "./components/PlansSection";
+import { PlanDetailsModal } from "./components/PlanDetailsModal";
 import { styles } from "./styles";
 import "./styles.css";
 import { checkAuthError } from "./utils/auth";
@@ -43,7 +45,8 @@ function WalletDashboard() {
     acceptIndex: number;
     discoveryItem: DiscoveryItem;
   } | null>(null);
-  const [activeTab, setActiveTab] = useState<"wallet" | "discovery" | "agents" | "analytics">("wallet");
+  const [activeTab, setActiveTab] = useState<"wallet" | "discovery" | "agents" | "analytics" | "plans">("wallet");
+  const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
   const [directCallerModalOpen, setDirectCallerModalOpen] = useState(false);
   const [mcpConnectionModalOpen, setMcpConnectionModalOpen] = useState(false);
   const [budgetModalOpen, setBudgetModalOpen] = useState(false);
@@ -382,6 +385,19 @@ function WalletDashboard() {
           </svg>
           <span>Analytics</span>
         </button>
+        <button
+          style={{
+            ...styles.tab,
+            ...(activeTab === "plans" ? styles.tabActive : {}),
+          }}
+          onClick={() => setActiveTab("plans")}
+          className={`tab ${activeTab === "plans" ? "tab-active" : ""}`}
+        >
+          <svg style={styles.tabIcon} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+          </svg>
+          <span>Plans</span>
+        </button>
 
       </div>
 
@@ -439,6 +455,12 @@ function WalletDashboard() {
         {wallet && <AnalyticsSection walletAddress={wallet.address} />}
       </div>
 
+      <div style={activeTab === "plans" ? styles.tabContent : styles.tabContentHidden}>
+        <PlansSection
+          onPlanSelect={(planId) => setSelectedPlan(planId)}
+        />
+      </div>
+
       {transferForm && wallet && (
         <TransferModal
           wallet={wallet}
@@ -493,6 +515,28 @@ function WalletDashboard() {
         isOpen={budgetModalOpen}
         onClose={() => setBudgetModalOpen(false)}
       />
+
+      {selectedPlan && (
+        <PlanDetailsModal
+          planId={selectedPlan}
+          onClose={() => setSelectedPlan(null)}
+          onCancel={async (planId) => {
+            try {
+              const response = await fetch(`/api/x402/plans/${planId}/cancel`, {
+                method: 'POST',
+                credentials: 'include',
+              });
+              if (response.ok) {
+                setSelectedPlan(null);
+                // Refresh plans list
+                window.location.reload();
+              }
+            } catch (err) {
+              console.error('Failed to cancel plan:', err);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

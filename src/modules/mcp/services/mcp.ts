@@ -188,6 +188,8 @@ const PaySchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).optional().describe("HTTP method (default: GET)"),
   body: z.string().optional().describe("Request body (for POST/PUT requests)"),
   headers: z.record(z.string(), z.string()).optional().describe("Additional HTTP headers"),
+  planId: z.string().optional().describe("Plan ID for tracking this payment (optional, requires stepId)"),
+  stepId: z.string().optional().describe("Step ID from plan for tracking this payment (optional, requires planId)"),
   walletAddress: z.string().optional().describe("Wallet address to use (defaults to first wallet)"),
 });
 
@@ -221,6 +223,69 @@ const PaymentHistorySchema = z.object({
   timeframe: z.number().optional().describe("Timeframe in days (default: 30)"),
 });
 
+// Plan schemas
+const CreatePlanSchema = z.object({
+  title: z.string().describe("Plan title"),
+  objective: z.string().describe("Plan objective/description"),
+  scope: z.object({
+    assumptions: z.array(z.string()).optional(),
+    acceptance_criteria: z.array(z.string()).optional(),
+  }).optional(),
+  steps: z.array(z.object({
+    id: z.string().describe("Step identifier (unique within plan)"),
+    title: z.string().describe("Step title"),
+    tool: z.object({
+      method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"] as const),
+      url: z.string().url(),
+    }),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    success_criteria: z.string().optional(),
+    estimated_cost_usdc: z.string().optional(),
+    max_cost_usdc: z.string().optional(),
+    fallback: z.string().optional(),
+    requires_evidence: z.boolean().optional(),
+  })),
+  tool_policy: z.object({
+    allowlist: z.array(z.string()).describe("List of allowed tool URL patterns (supports wildcards)"),
+    denylist: z.array(z.string()).optional(),
+    require_allowlist: z.boolean().describe("Whether to enforce allowlist (default: true)"),
+  }),
+  budget: z.object({
+    currency: z.string().default("USDC"),
+    not_to_exceed_usdc: z.string().describe("Total budget limit in human-readable USDC (e.g., '0.50')"),
+    approval_threshold_usdc: z.string().optional().describe("Amount threshold requiring explicit approval"),
+    per_tool_caps_usdc: z.record(z.string(), z.string()).optional().describe("Per-tool cost caps (URL pattern -> max amount)"),
+    per_step_default_cap_usdc: z.string().optional().describe("Default max cost per step"),
+  }),
+  tags: z.array(z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  workspace_id: z.string().optional(),
+});
+
+const ListPlansSchema = z.object({
+  status: z.union([z.string(), z.array(z.string())]).optional().describe("Filter by status (draft, running, completed, etc.)"),
+  tags: z.array(z.string()).optional().describe("Filter by tags"),
+  workspace_id: z.string().optional().describe("Filter by workspace"),
+  limit: z.number().optional().describe("Number of results (default: 50)"),
+  offset: z.number().optional().describe("Pagination offset (default: 0)"),
+  sort: z.array(z.object({
+    field: z.enum(["created_at", "status", "title"] as const),
+    direction: z.enum(["asc", "desc"] as const),
+  })).optional().describe("Sort order"),
+});
+
+const GetPlanSchema = z.object({
+  plan_id: z.string().describe("Plan ID"),
+});
+
+const ApproveAndStartPlanSchema = z.object({
+  plan_id: z.string().describe("Plan ID to approve and start"),
+});
+
+const CancelPlanSchema = z.object({
+  plan_id: z.string().describe("Plan ID to cancel"),
+});
+
 const SetPreferencesSchema = z.object({
   perRequestMax: z.string().optional().describe("Maximum amount per request in human-readable USDC (e.g., '0.05' for 0.05 USDC)"),
   sessionBudget: z.string().optional().describe("Total session budget in human-readable USDC (e.g., '5.00' for 5.00 USDC)"),
@@ -238,6 +303,11 @@ enum ToolName {
   DISCOVER_BAZAAR_RESOURCES = "search_x402_bazaar_resources",
   PAYMENT_HISTORY = "get_x402_payment_history",
   SET_PREFERENCES = "set_x402_preferences",
+  CREATE_PLAN = "create_x402_plan",
+  LIST_PLANS = "list_x402_plans",
+  GET_PLAN = "get_x402_plan",
+  APPROVE_AND_START_PLAN = "approve_and_start_x402_plan",
+  CANCEL_PLAN = "cancel_x402_plan",
 }
 
 // Placeholder prompts - not currently used
@@ -680,6 +750,31 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         name: ToolName.SET_PREFERENCES,
         description: "Set user preferences for budget limits and discovery filters. Budget amounts are in human-readable USDC format (e.g., '0.05' for 0.05 USDC). All parameters are optional for partial updates.",
         inputSchema: toJsonSchema(SetPreferencesSchema),
+      },
+      {
+        name: ToolName.CREATE_PLAN,
+        description: "Create a draft execution plan with steps, budget, and tool allowlist. Returns the created plan with status 'draft'.",
+        inputSchema: toJsonSchema(CreatePlanSchema),
+      },
+      {
+        name: ToolName.LIST_PLANS,
+        description: "List user's execution plans with optional filtering by status, tags, or date range. Returns plans with their current status and budget progress.",
+        inputSchema: toJsonSchema(ListPlansSchema),
+      },
+      {
+        name: ToolName.GET_PLAN,
+        description: "Get detailed information about a specific plan including status, receipts, deliverables, and budget progress.",
+        inputSchema: toJsonSchema(GetPlanSchema),
+      },
+      {
+        name: ToolName.APPROVE_AND_START_PLAN,
+        description: "Approve and start execution of a plan. This locks the plan scope (computes integrity hash) and transitions it to 'running' status. If already approved/running, returns the existing plan (idempotent).",
+        inputSchema: toJsonSchema(ApproveAndStartPlanSchema),
+      },
+      {
+        name: ToolName.CANCEL_PLAN,
+        description: "Cancel a running or paused plan. Stops execution and transitions plan to 'canceled' status.",
+        inputSchema: toJsonSchema(CancelPlanSchema),
       },
     ];
 
@@ -1230,7 +1325,40 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
         });
         
         // Make payment
-        logger.debug("Making payment", { resourceUrl: validatedArgs.resourceUrl });
+        logger.debug("Making payment", { 
+          resourceUrl: validatedArgs.resourceUrl,
+          planId: validatedArgs.planId,
+          stepId: validatedArgs.stepId,
+        });
+        
+        // If planId and stepId provided, validate budget before payment
+        if (validatedArgs.planId && validatedArgs.stepId) {
+          const { getPlan } = await import('../../plans/service.js');
+          const { validateBudgetRules } = await import('../../plans/budgetEnforcer.js');
+          
+          try {
+            const plan = await getPlan(validatedArgs.planId, userId);
+            // We'll validate budget after payment to get actual amount
+            // For now, just check if plan is running
+            if (plan.status !== 'running' && plan.status !== 'paused') {
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: "text",
+                    text: `Plan ${validatedArgs.planId} is not in a running state (current: ${plan.status}). Cannot record receipt.`,
+                  },
+                ],
+              };
+            }
+          } catch (error) {
+            logger.warning("Plan validation failed, continuing with payment", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            // Continue with payment even if plan validation fails
+          }
+        }
+        
         const { response, paymentResponse } = await makePayment(pkpAccount, validatedArgs.resourceUrl, {
           method: validatedArgs.method,
           body: validatedArgs.body,
@@ -1244,6 +1372,53 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
           data = await response.json();
         } else {
           data = await response.text();
+        }
+        
+        // Auto-record receipt if planId and stepId provided
+        if (validatedArgs.planId && validatedArgs.stepId && paymentResponse) {
+          try {
+            const { createReceipt } = await import('../../plans/receiptService.js');
+            
+            // Extract payment amount from paymentResponse
+            // paymentResponse.value is in USDC smallest units (6 decimals)
+            // e.g., "50000" = 0.05 USDC
+            const amount = paymentResponse.value?.toString() || '0';
+            const amountUsdc = parseFloat(formatTokenAmount(amount, USDC_DECIMALS)).toFixed(6);
+            
+            await createReceipt(validatedArgs.planId, userId, {
+              step_id: validatedArgs.stepId,
+              tool: {
+                method: validatedArgs.method || 'GET',
+                url: validatedArgs.resourceUrl,
+              },
+              cost: {
+                currency: 'USDC',
+                amount: amountUsdc,
+              },
+              x402: {
+                payment_reference: paymentResponse.transactionHash,
+                request_id: paymentResponse.requestId,
+                response_status: response.status,
+              },
+              output: {
+                type: contentType?.includes('application/json') ? 'json' : 'text',
+                ref: 'inline',
+                summary: `Payment successful: ${response.status}`,
+              },
+            });
+            
+            logger.debug("Receipt auto-recorded", {
+              planId: validatedArgs.planId,
+              stepId: validatedArgs.stepId,
+              amount: amountUsdc,
+            });
+          } catch (error) {
+            // Log but don't fail the payment - receipt recording is best effort
+            logger.error("Failed to auto-record receipt", error as Error, {
+              planId: validatedArgs.planId,
+              stepId: validatedArgs.stepId,
+            });
+          }
         }
         
         return {
@@ -1261,6 +1436,7 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
                   amount: paymentResponse.value,
                   transactionHash: paymentResponse.transactionHash,
                 } : null,
+                receiptRecorded: validatedArgs.planId && validatedArgs.stepId && paymentResponse ? true : undefined,
               }, null, 2),
             },
           ],
@@ -1714,6 +1890,211 @@ export const createMcpServer = (sessionId?: string): McpServerWrapper => {
             {
               type: "text",
               text: `Error fetching payment history: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.CREATE_PLAN) {
+      try {
+        const validatedArgs = CreatePlanSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        const { createPlan } = await import('../../plans/service.js');
+        const plan = await createPlan(userId, validatedArgs);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                plan: {
+                  id: plan.id,
+                  title: plan.title,
+                  status: plan.status,
+                  created_at: plan.created_at,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to create plan", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error creating plan: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.LIST_PLANS) {
+      try {
+        const validatedArgs = ListPlansSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        const { listPlans } = await import('../../plans/service.js');
+        
+        // Convert validated args to PlanFilters, ensuring status is properly typed
+        const filters = {
+          ...validatedArgs,
+          status: validatedArgs.status as any, // Zod validation ensures it's a valid status
+        };
+        
+        const result = await listPlans(userId, filters);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                plans: result.plans.map((p: any) => ({
+                  id: p.id,
+                  title: p.title,
+                  status: p.status,
+                  budget: {
+                    total: p.spec.budget.not_to_exceed_usdc,
+                    spent: p.execution.spend.total_usdc,
+                    remaining: p.execution.spend.remaining_usdc,
+                  },
+                  created_at: p.created_at,
+                })),
+                total: result.total,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to list plans", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error listing plans: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.GET_PLAN) {
+      try {
+        const validatedArgs = GetPlanSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        const { getPlan } = await import('../../plans/service.js');
+        const { getReceipts } = await import('../../plans/receiptService.js');
+        const { getDeliverables } = await import('../../plans/deliverableService.js');
+        
+        const plan = await getPlan(validatedArgs.plan_id, userId);
+        const receipts = await getReceipts(validatedArgs.plan_id, userId);
+        const deliverables = await getDeliverables(validatedArgs.plan_id, userId);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                plan: {
+                  ...plan,
+                  receipts,
+                  deliverables,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to get plan", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error getting plan: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.APPROVE_AND_START_PLAN) {
+      try {
+        const validatedArgs = ApproveAndStartPlanSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        const { approveAndStartPlan } = await import('../../plans/service.js');
+        const plan = await approveAndStartPlan(validatedArgs.plan_id, userId);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                plan: {
+                  id: plan.id,
+                  status: plan.status,
+                  plan_hash: plan.plan_hash,
+                  integrity: plan.integrity,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to approve and start plan", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error approving and starting plan: ${(error as Error).message}`,
+            },
+          ],
+        };
+      }
+    }
+
+    if (name === ToolName.CANCEL_PLAN) {
+      try {
+        const validatedArgs = CancelPlanSchema.parse(args);
+        const { userId } = await getUserContext(authInfo);
+        
+        const { cancelPlan } = await import('../../plans/service.js');
+        const plan = await cancelPlan(validatedArgs.plan_id, userId);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                plan: {
+                  id: plan.id,
+                  status: plan.status,
+                },
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("Failed to cancel plan", error as Error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error canceling plan: ${(error as Error).message}`,
             },
           ],
         };

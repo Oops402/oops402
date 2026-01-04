@@ -1453,6 +1453,286 @@ async function main() {
         }
       });
 
+      // ============================================================================
+      // Plan + Execution API Routes
+      // ============================================================================
+
+      // Create plan
+      app.post('/api/x402/plans', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const {
+            createPlan,
+          } = await import('./modules/plans/service.js');
+
+          const plan = await createPlan(userId, req.body);
+          res.status(201).json({ success: true, plan });
+        } catch (error) {
+          logger.error('Failed to create plan', error as Error);
+          res.status(500).json({
+            error: 'Failed to create plan',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // List plans
+      app.get('/api/x402/plans', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const {
+            listPlans,
+          } = await import('./modules/plans/service.js');
+
+          const filters: any = {};
+          if (req.query.status) {
+            filters.status = Array.isArray(req.query.status) ? req.query.status : [req.query.status];
+          }
+          if (req.query.tags) {
+            filters.tags = Array.isArray(req.query.tags) ? req.query.tags : [req.query.tags];
+          }
+          if (req.query.workspace_id) {
+            filters.workspace_id = req.query.workspace_id;
+          }
+          if (req.query.limit) {
+            filters.limit = parseInt(req.query.limit as string, 10);
+          }
+          if (req.query.offset) {
+            filters.offset = parseInt(req.query.offset as string, 10);
+          }
+
+          const result = await listPlans(userId, filters);
+          res.json({ success: true, ...result });
+        } catch (error) {
+          logger.error('Failed to list plans', error as Error);
+          res.status(500).json({
+            error: 'Failed to list plans',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Get plan
+      app.get('/api/x402/plans/:id', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            getPlan,
+          } = await import('./modules/plans/service.js');
+          const {
+            getReceipts,
+          } = await import('./modules/plans/receiptService.js');
+          const {
+            getDeliverables,
+          } = await import('./modules/plans/deliverableService.js');
+
+          const plan = await getPlan(id, userId);
+          const receipts = await getReceipts(id, userId);
+          const deliverables = await getDeliverables(id, userId);
+
+          res.json({
+            success: true,
+            plan: {
+              ...plan,
+              receipts,
+              deliverables,
+            },
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('Plan not found')) {
+            return res.status(404).json({
+              error: 'Plan not found',
+              message: error.message,
+            });
+          }
+          logger.error('Failed to get plan', error as Error);
+          res.status(500).json({
+            error: 'Failed to get plan',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Update plan (draft only)
+      app.patch('/api/x402/plans/:id', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            updatePlan,
+          } = await import('./modules/plans/service.js');
+
+          const plan = await updatePlan(id, userId, req.body);
+          res.json({ success: true, plan });
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('locked')) {
+            return res.status(409).json({
+              error: 'Plan is locked',
+              message: error.message,
+            });
+          }
+          logger.error('Failed to update plan', error as Error);
+          res.status(500).json({
+            error: 'Failed to update plan',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Approve and start plan
+      app.post('/api/x402/plans/:id/approve_and_start', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            approveAndStartPlan,
+          } = await import('./modules/plans/service.js');
+
+          const plan = await approveAndStartPlan(id, userId);
+          res.json({ success: true, plan });
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('Invalid status transition')) {
+            return res.status(409).json({
+              error: 'Invalid transition',
+              message: error.message,
+            });
+          }
+          logger.error('Failed to approve and start plan', error as Error);
+          res.status(500).json({
+            error: 'Failed to approve and start plan',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Cancel plan
+      app.post('/api/x402/plans/:id/cancel', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            cancelPlan,
+          } = await import('./modules/plans/service.js');
+
+          const plan = await cancelPlan(id, userId);
+          res.json({ success: true, plan });
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('Invalid status transition')) {
+            return res.status(409).json({
+              error: 'Invalid transition',
+              message: error.message,
+            });
+          }
+          logger.error('Failed to cancel plan', error as Error);
+          res.status(500).json({
+            error: 'Failed to cancel plan',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Get plan receipts
+      app.get('/api/x402/plans/:id/receipts', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            getReceipts,
+          } = await import('./modules/plans/receiptService.js');
+
+          const pagination = {
+            limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+            offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
+          };
+
+          const receipts = await getReceipts(id, userId, pagination);
+          res.json({ success: true, receipts });
+        } catch (error) {
+          logger.error('Failed to get receipts', error as Error);
+          res.status(500).json({
+            error: 'Failed to get receipts',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Add deliverable
+      app.post('/api/x402/plans/:id/deliverables', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            createDeliverable,
+          } = await import('./modules/plans/deliverableService.js');
+
+          const deliverable = await createDeliverable(id, userId, req.body);
+          res.status(201).json({ success: true, deliverable });
+        } catch (error) {
+          logger.error('Failed to create deliverable', error as Error);
+          res.status(500).json({
+            error: 'Failed to create deliverable',
+            message: (error as Error).message,
+          });
+        }
+      });
+
+      // Get plan deliverables
+      app.get('/api/x402/plans/:id/deliverables', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
+        try {
+          const userId = getUserId(req);
+          if (!userId) {
+            return res.status(401).json({ error: 'User ID not found' });
+          }
+
+          const { id } = req.params;
+          const {
+            getDeliverables,
+          } = await import('./modules/plans/deliverableService.js');
+
+          const deliverables = await getDeliverables(id, userId);
+          res.json({ success: true, deliverables });
+        } catch (error) {
+          logger.error('Failed to get deliverables', error as Error);
+          res.status(500).json({
+            error: 'Failed to get deliverables',
+            message: (error as Error).message,
+          });
+        }
+      });
+
       // Transfer tokens
       app.post('/api/wallet/transfer', walletApiLimiter, webAuth.requiresAuth, async (req, res) => {
         try {

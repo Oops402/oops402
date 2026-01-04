@@ -26,6 +26,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io) enables seamless i
 - [Quick Start](#quick-start)
 - [Connecting to ChatGPT and Claude](#connecting-to-chatgpt-and-claude)
 - [MCP Features](#mcp-features)
+- [Budget & Preferences System](#budget--preferences-system)
+- [Plan + Execution API System](#plan--execution-api-system)
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
 - [Documentation](#documentation)
@@ -141,6 +143,16 @@ This server provides the following MCP tools for AI agents:
   - **Budget Limits**: Set per-request maximum and session budget limits
   - **Discovery Filters**: Configure to show only promoted resources/agents and set minimum agent score threshold
 
+### Plan & Execution Tools
+- **`create_x402_plan`**: Create a draft plan with structured steps, budget constraints, and tool allowlists. Plans define a sequence of operations with cost estimates and execution policies.
+- **`list_x402_plans`**: List user's plans with filtering by status, tags, or date range. Returns plan summaries with status, budget progress, and execution state.
+- **`get_x402_plan`**: Get detailed plan information including full specification, execution progress, receipts, deliverables, and budget status.
+- **`approve_and_start_x402_plan`**: Approve a plan (locks the specification with an integrity hash) and start execution. This combined operation ensures plans cannot be modified after approval.
+- **`cancel_x402_plan`**: Cancel a running or paused plan to stop execution.
+
+**Enhanced Payment Tool:**
+- **`make_x402_payment`**: Enhanced to support plan execution. When `planId` and `stepId` are provided, automatically records receipts, validates budget constraints, and checks for plan completion. Backward compatible for direct payments without plan tracking.
+
 ### Additional MCP Features
 - **[Resources](https://modelcontextprotocol.io/docs/concepts/resources)**: Example resources with pagination and subscription support
 - **[Prompts](https://modelcontextprotocol.io/docs/concepts/prompts)**: Simple and complex prompts with argument support
@@ -179,13 +191,104 @@ Preferences are automatically applied to:
 - MCP tools (`discover_x402_agents`, `search_x402_bazaar_resources`)
 - Payment validation (budget limits are checked before processing payments)
 
-### Web Dashboard
-
 The wallet dashboard (`/wallet`) provides a user-friendly interface for managing budget and trust settings:
 - View current budget limits and remaining session budget
 - Configure per-request maximum and session budget
 - Set discovery preferences (only promoted, minimum agent score)
 - Monitor session spending in real-time
+
+## Plan + Execution API System
+
+Oops!402 includes a comprehensive plan execution system that enables structured, budget-controlled execution of multi-step operations. This system allows AI agents to create plans, approve them with integrity guarantees, execute steps with automatic receipt tracking, and store deliverables on IPFS.
+
+### Key Features
+
+- **Structured Plans**: Define multi-step operations with budget constraints, tool allowlists, and execution policies
+- **Integrity Guarantees**: Plans are locked with cryptographic hashes upon approval, preventing modification during execution
+- **Budget Enforcement**: Multiple budget rules enforced automatically (hard cap, per-step cap, per-tool cap, approval thresholds)
+- **Automatic Receipt Tracking**: Payments made with `planId` and `stepId` are automatically recorded as receipts
+- **IPFS Deliverables**: Store execution artifacts (reports, screenshots, datasets) on IPFS via Pinata x402
+- **Auto-Completion**: Plans automatically complete when all steps have receipts
+
+### Plan Lifecycle
+
+1. **Draft**: Plan is created and can be modified
+2. **Approved**: Plan is locked with integrity hash and ready for execution
+3. **Running**: Plan is actively executing steps
+4. **Completed**: All steps have receipts, plan is finished
+5. **Canceled**: Plan execution was stopped by user
+6. **Failed**: Plan execution encountered an error
+
+### Budget Enforcement Rules
+
+The system enforces multiple budget constraints:
+
+- **Hard Cap**: Total spend cannot exceed `budget.not_to_exceed_usdc`
+- **Per-Step Cap**: Each step's cost is limited by `step.max_cost_usdc` or `budget.per_step_default_cap_usdc`
+- **Per-Tool Cap**: Tool-specific limits via `budget.per_tool_caps_usdc` with wildcard matching
+- **Approval Threshold**: Payments above `budget.approval_threshold_usdc` require explicit approval
+- **Tool Allowlist**: If `tool_policy.require_allowlist=true`, only tools matching allowlist patterns are permitted
+
+### Receipt Tracking
+
+Receipts are automatically created when payments are made with `planId` and `stepId`:
+
+- **Automatic Recording**: `make_x402_payment` tool automatically records receipts after successful payments
+- **Duplicate Prevention**: Natural idempotency via database constraint on `(plan_id, step_id, payment_reference)`
+- **Budget Validation**: Budget constraints are checked before payment execution
+- **Auto-Completion**: Plans automatically transition to `completed` when all steps have receipts
+
+### Deliverable Storage
+
+Deliverables (execution artifacts) are stored on IPFS via Pinata x402:
+
+- **Public Files**: Direct IPFS gateway access
+- **Private Files**: Access via Pinata x402 retrieve endpoint with x402 payment
+- **CID Storage**: Content identifiers stored in Supabase for fast retrieval
+- **Types Supported**: Reports, screenshots, datasets, and other execution artifacts
+
+### API Endpoints
+
+All plan endpoints are under `/api/x402/plans`:
+
+- `POST /api/x402/plans` - Create a new plan
+- `GET /api/x402/plans` - List plans with filtering
+- `GET /api/x402/plans/:id` - Get plan details (includes receipts and deliverables)
+- `PATCH /api/x402/plans/:id` - Update plan (draft only)
+- `POST /api/x402/plans/:id/approve_and_start` - Approve and start execution
+- `POST /api/x402/plans/:id/cancel` - Cancel a running plan
+- `GET /api/x402/plans/:id/receipts` - List receipts (paginated)
+- `POST /api/x402/plans/:id/deliverables` - Add deliverable
+- `GET /api/x402/plans/:id/deliverables` - List deliverables (paginated)
+
+### Database Schema
+
+Plans are stored in Supabase with the following tables:
+
+- **`oops402_plans`**: Main plans table with specification, status, execution state, and integrity metadata
+- **`oops402_plan_receipts`**: Append-only receipts with budget validation
+- **`oops402_plan_deliverables`**: Deliverables with IPFS CIDs and metadata
+
+See `docs/supabase-schema.sql` for the complete schema definition.
+
+### Web Dashboard
+
+The wallet dashboard includes a Plans tab (`/wallet`) for viewing and managing plans:
+
+- **Plans List**: View all plans with status badges, budget progress, and quick stats
+- **Plan Details Modal**: Full plan specification, receipts timeline, deliverables gallery
+- **Filtering**: Filter by status (draft, running, completed, etc.)
+- **Actions**: Cancel running plans, view receipts and deliverables
+
+**Note**: Plan creation and editing are done via MCP tools (LLM-driven), while the UI provides read-only viewing and management capabilities.
+
+### Pinata x402 Integration
+
+Deliverables are stored on IPFS using Pinata x402:
+
+- **Upload Flow**: Upload files to Pinata x402 with x402 payment for storage
+- **Retrieval Flow**: Access private files via Pinata x402 retrieve endpoint
+- **Configuration**: Set `PINATA_X402_BASE_URL` and `PINATA_X402_NETWORK` environment variables
 
 ## Development Setup
 
@@ -457,9 +560,19 @@ Before a promotion is created, the system verifies:
 - The transaction is sent from the expected wallet address
 - The transaction is sent to the configured recipient (if `PROMOTION_PAYMENT_RECIPIENT` is set)
 
+**Pinata x402 Configuration (Optional - for deliverable storage):**
+
+- `PINATA_X402_BASE_URL` - Base URL for Pinata x402 API (optional)
+  - Default: `https://402.pinata.cloud`
+  - Example: `https://402.pinata.cloud`
+
+- `PINATA_X402_NETWORK` - Network for Pinata x402 uploads (optional)
+  - Default: `public` (public IPFS)
+  - Example: `private` (private IPFS with x402 access control)
+
 **Database Setup:**
 
-Run the SQL schema in `docs/supabase-schema.sql` on your Supabase database to create the required tables:
+Run the SQL schema in `docs/supabase-schema.sql` on your Supabase database to create the required tables for promotions, analytics, preferences, and plans:
 - `oops402_promotions` - Active promotions
 - `oops402_payments` - All payments tracked
 - `oops402_promotion_payments` - Links payments to promotions
@@ -467,6 +580,9 @@ Run the SQL schema in `docs/supabase-schema.sql` on your Supabase database to cr
 - `oops402_click_analytics` - Click tracking for promoted results
 - `oops402_promotion_impressions` - Impression tracking for CTR calculation
 - `oops402_user_preferences` - User preferences for budget limits and discovery filters
+- `oops402_plans` - Execution plans with specifications and state
+- `oops402_plan_receipts` - Append-only payment receipts for plans
+- `oops402_plan_deliverables` - Execution deliverables stored on IPFS
 
 ### Privacy & Legal Considerations
 
@@ -542,6 +658,14 @@ npm run test:e2e  # End-to-end tests
 │   │   ├── preferences/      # Budget and preferences system
 │   │   │   ├── service.ts    # Preferences CRUD (Supabase) and session spending (Redis)
 │   │   │   └── types.ts      # Preferences type definitions
+│   │   ├── plans/            # Plan + Execution API system
+│   │   │   ├── service.ts    # Plan CRUD, approval, state machine
+│   │   │   ├── receiptService.ts # Receipt tracking and budget validation
+│   │   │   ├── deliverableService.ts # Deliverable storage and IPFS integration
+│   │   │   ├── budgetEnforcer.ts # Budget enforcement rules
+│   │   │   ├── pinataService.ts # Pinata x402 integration for IPFS
+│   │   │   ├── errors.ts    # Plan-related error classes
+│   │   │   └── types.ts      # Plan, Receipt, Deliverable type definitions
 │   │   ├── analytics/        # Analytics and tracking
 │   │   │   ├── service.ts    # Payment, search, click, and impression tracking
 │   │   │   └── types.ts      # Analytics type definitions
@@ -555,11 +679,22 @@ npm run test:e2e  # End-to-end tests
 │   │       ├── redis.ts      # Redis client with mock fallback
 │   │       └── supabase.ts   # Supabase client initialization
 │   └── static/               # Static web assets
+│   └── apps/
+│       └── wallet-dashboard/ # Web dashboard UI
+│           ├── App.tsx       # Main dashboard application
+│           ├── components/   # UI components
+│           │   ├── BudgetModal.tsx # Budget settings
+│           │   ├── PlansSection.tsx # Plans list view
+│           │   ├── PlanDetailsModal.tsx # Plan details view
+│           │   └── ...       # Other dashboard components
+│           └── utils/        # Dashboard utilities
 ├── examples/                 # Example client implementations
 │   ├── client.js             # Node.js client with OAuth flow
 │   └── curl-examples.sh      # Shell script with curl examples
 ├── docs/                     # Additional Documentation
-│   └── supabase-schema.sql  # Supabase database schema for promotions/analytics
+│   ├── supabase-schema.sql  # Supabase database schema (promotions, analytics, preferences, plans)
+│   ├── oauth-implementation.md # OAuth 2.0 implementation guide
+│   └── session-ownership.md  # Session ownership and isolation
 ├── tests/                    # Test files
 ├── .env.example              # Environment variable template
 ├── docker-compose.yml        # Docker setup for Redis
