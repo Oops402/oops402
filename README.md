@@ -13,6 +13,9 @@ Oops!402 gives AI agents the ability to:
 
 ### Architecture Highlights
 
+![Oops!402 Architecture Diagram](src/static/architecture.png)
+
+
 - **OAuth Authentication**: Uses [Auth0](https://auth0.com) as the OAuth 2.0 provider for secure authentication
 - **Self-Custodial Wallets**: Leverages [Lit Protocol](https://litprotocol.com) Lit Actions to create and manage Programmable Key Pairs (PKPs) that are bound to OAuth identities. Lit Actions verify Auth0 JWT tokens to ensure only authenticated users can access their wallets.
 - **Agent Discovery**: Uses [ERC8004 (Agent0)](https://github.com/agent0-protocol/agent0) for discovering AI agents on-chain. Agents register their capabilities, MCP tools, A2A skills, and x402 payment support on Agent0 smart contracts.
